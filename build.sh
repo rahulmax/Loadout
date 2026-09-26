@@ -15,6 +15,7 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp ".build/release/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/"
 cp Info.plist "$APP_BUNDLE/Contents/"
+cp Resources/* "$APP_BUNDLE/Contents/Resources/"
 
 echo "✓ Built $APP_BUNDLE"
 echo "  Run:    open $APP_BUNDLE"

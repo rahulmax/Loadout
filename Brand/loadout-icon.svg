@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4589ff"/>
+      <stop offset="1" stop-color="#0043ce"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".22"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="drop" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#001141" flood-opacity=".35"/>
+    </filter>
+    <filter id="gshadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#001d6c" flood-opacity=".35"/>
+    </filter>
+  </defs>
+  <g filter="url(#drop)">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  </g>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+  <rect x="101" y="101" width="822" height="822" rx="184" fill="none" stroke="#fff" stroke-opacity=".18" stroke-width="2"/>
+  <g filter="url(#gshadow)"><path transform="translate(233.4484679665738 233.4484679665738) scale(17.40947075208914)" d="M21,30.36H11c-2.404,0-4.36-1.956-4.36-4.36V10c0-2.404,1.956-4.36,4.36-4.36h0.655 c0.184-2.236,2.062-4,4.345-4s4.162,1.764,4.346,4H21c2.404,0,4.36,1.956,4.36,4.36v16C25.36,28.404,23.404,30.36,21,30.36z M11,6.36c-2.007,0-3.64,1.633-3.64,3.64v16c0,2.007,1.633,3.64,3.64,3.64h10c2.007,0,3.64-1.633,3.64-3.64V10 c0-2.007-1.633-3.64-3.64-3.64C21,6.36,11,6.36,11,6.36z M12.377,5.64h7.245C19.44,3.801,17.886,2.36,16,2.36 S12.559,3.801,12.377,5.64z M9.36,23H8.64v-2c0-0.199,0.161-0.36,0.36-0.36h14v0.721H9.36V23z M9.36,16H8.64v-2h0.72 C9.36,14,9.36,16,9.36,16z M23.36,15h-0.72v-5c0-0.904-0.735-1.64-1.64-1.64H11c-0.904,0-1.64,0.736-1.64,1.64v3H8.64v-3 c0-1.301,1.059-2.36,2.36-2.36h10c1.302,0,2.36,1.059,2.36,2.36V15z" fill="#fff" stroke="#fff" stroke-width="0.4" stroke-linejoin="round" stroke-linecap="round"/></g>
+</svg>
