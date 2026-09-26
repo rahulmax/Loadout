@@ -25,6 +25,8 @@ struct PortEntry: Identifiable, Hashable {
     let isOrphaned: Bool
 
     var url: URL? { URL(string: "http://localhost:\(port)") }
+    /// Project folder with the home directory shortened to ~, e.g. ~/code/tea-house.
+    var displayPath: String? { cwd.map { ($0 as NSString).abbreviatingWithTildeInPath } }
     var canRestart: Bool { cwd != nil && !command.trimmingCharacters(in: .whitespaces).isEmpty }
 }
 
@@ -610,6 +612,9 @@ struct PortsSection: View {
                     .padding(.horizontal, 12).padding(.vertical, 4)
             } else {
                 ForEach(store.ports) { entry in
+                    if entry.id != store.ports.first?.id {
+                        Divider().padding(.horizontal, 12)
+                    }
                     PortRow(
                         entry: entry,
                         health: store.health[entry.port] ?? .unknown,
@@ -647,9 +652,11 @@ struct PortRow: View {
                 .help(Text(verbatim: "Open http://localhost:\(entry.port)"))
 
                 HStack(spacing: 3) {
-                    Text(entry.projectName ?? entry.processName)
+                    Text(verbatim: entry.displayPath ?? entry.projectName ?? entry.processName)
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(Text(verbatim: entry.cwd ?? ""))
                     if let framework = entry.framework {
                         Text("· \(framework)").font(.system(size: 10)).foregroundStyle(.secondary)
                     }
@@ -686,7 +693,7 @@ struct PortRow: View {
                 .help("Kill — SIGTERM, then SIGKILL if it doesn't stop")
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
+        .padding(.horizontal, 12).padding(.vertical, 8)
     }
 }
 
