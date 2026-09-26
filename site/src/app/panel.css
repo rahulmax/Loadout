@@ -2,7 +2,7 @@
   The recreated menu bar panel. Sizes are measured off the SwiftUI snapshot
   renders (LOADOUT_SNAPSHOT) at 1x; colours are macOS window chrome, not site
   tokens, because this is a picture of a Mac app. The only site colour inside
-  it is the app icon; the accent is macOS blue.
+  is none: the app icon and the accent are macOS blue.
 */
 .mac-panel {
   --mac-bg: #ececec;
@@ -83,7 +83,7 @@
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  background: linear-gradient(rgb(255 140 120), rgb(var(--coral-strong)));
+  background: linear-gradient(#4ba3ff, #0a6cf0);
   box-shadow:
     inset 0 0 0 0.5px rgb(0 0 0 / 0.12),
     0 1px 1px rgb(0 0 0 / 0.1);

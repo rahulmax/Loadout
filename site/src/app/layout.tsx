@@ -1,18 +1,16 @@
 import type { Metadata, Viewport } from 'next'
-import { IBM_Plex_Mono, IBM_Plex_Sans } from 'next/font/google'
+import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
 
-const sans = IBM_Plex_Sans({
+const sans = Geist({
   subsets: ['latin'],
-  weight: ['300', '400', '500', '600'],
-  variable: '--font-plex-sans',
+  variable: '--font-geist-sans',
   display: 'swap',
 })
 
-const mono = IBM_Plex_Mono({
+const mono = Geist_Mono({
   subsets: ['latin'],
-  weight: ['400', '500'],
-  variable: '--font-plex-mono',
+  variable: '--font-geist-mono',
   display: 'swap',
 })
 
@@ -24,8 +22,8 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#f6f3ec' },
-    { media: '(prefers-color-scheme: dark)', color: '#121110' },
+    { media: '(prefers-color-scheme: light)', color: '#f4f5f7' },
+    { media: '(prefers-color-scheme: dark)', color: '#0d0e10' },
   ],
 }
 

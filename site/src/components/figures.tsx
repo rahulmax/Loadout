@@ -1,7 +1,3 @@
-import { ArrowRight } from 'lucide-react'
-import { PictogramTile } from './pictogram'
-import type { PictogramName } from './pictograms'
-
 /*
   What one skill costs in each state. The example is an 18 KB skill body,
   inside the 5–50 KB range the README gives; name-only is ~150 characters.
@@ -31,10 +27,9 @@ const COSTS = [
 
 export function SkillCostFigure() {
   return (
-    <figure className="figure cost-figure">
-      <figcaption className="figure-head">
-        <span className="figure-kicker">One skill, four states</span>
-        <span className="figure-meta">Context it adds per session</span>
+    <figure className="cost-figure">
+      <figcaption className="sr-only">
+        Context one 18 KB skill adds per session, in each of its four states.
       </figcaption>
       <ol className="cost-rows">
         {COSTS.map((c) => (
@@ -53,7 +48,7 @@ export function SkillCostFigure() {
           </li>
         ))}
       </ol>
-      <p className="figure-foot">
+      <p className="cost-foot">
         Example: an 18 KB skill. Name-only is about 120 times smaller and the
         skill stays discoverable.
       </p>
@@ -61,46 +56,32 @@ export function SkillCostFigure() {
   )
 }
 
-const FLOW: { title: string; body: string; picto: PictogramName }[] = [
+const FLOW = [
   {
     title: 'You flip a switch',
     body: 'Plugin, skill state or MCP server, in the menu bar.',
-    picto: 'toggle',
   },
   {
     title: 'Loadout writes the field',
     body: 'settings.json or ~/.claude.json. Temp file, then an atomic swap.',
-    picto: 'install',
   },
   {
     title: '/reload-plugins is copied',
     body: 'Paste it into a running session. New sessions need nothing.',
-    picto: 'backpack',
   },
 ]
 
 export function FlowFigure() {
   return (
-    <figure className="figure flow-figure">
+    <figure>
       <figcaption className="sr-only">
         The write path: a toggle writes the settings field, then the reload
         command lands on the clipboard.
       </figcaption>
       <ol className="flow">
         {FLOW.map((step, i) => (
-          <li key={step.title} className="flow-step glow-host">
-            <div className="flow-top">
-              <PictogramTile name={step.picto} />
-              {i < FLOW.length - 1 && (
-                <ArrowRight
-                  className="flow-arrow"
-                  size={16}
-                  strokeWidth={1.6}
-                  aria-hidden
-                />
-              )}
-            </div>
-            <span className="flow-index">0{i + 1}</span>
+          <li key={step.title} className="flow-step">
+            <span className="flow-index">{String(i + 1).padStart(2, '0')}</span>
             <strong>{step.title}</strong>
             <p>{step.body}</p>
           </li>

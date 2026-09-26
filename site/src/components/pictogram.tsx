@@ -18,22 +18,3 @@ export function Pictogram({
     />
   )
 }
-
-/**
- * A pictogram on Groundwork's tile: a one-hue vertical fill, a 1px edge and a
- * faint inner ring. It lights coral when an ancestor marked `glow-host` is
- * hovered or focused, so the card decides when and the tile decides how.
- */
-export function PictogramTile({
-  name,
-  size = 'md',
-}: {
-  name: PictogramName
-  size?: 'sm' | 'md' | 'lg'
-}) {
-  return (
-    <span className={`pictogram-tile pictogram-tile-${size}`} aria-hidden>
-      <Pictogram name={name} />
-    </span>
-  )
-}
