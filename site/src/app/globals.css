@@ -4,8 +4,8 @@
 /*
   Tokens are space-separated RGB channels, so any of them can take an alpha:
   rgb(var(--ink) / 0.06). Dark is a second mode, not a second theme: the coral
-  holds, only grounds and inks swap. Grounds are warm, a few points off grey,
-  like washi and sumi rather than white and black.
+  holds, only grounds and inks swap. The light ground is a cool white; the
+  dark ground stays warm, like sumi rather than black.
 */
 @theme inline {
   --color-paper: rgb(var(--paper));
@@ -20,13 +20,13 @@
 
 :root {
   color-scheme: light;
-  --paper: 246 243 236;
-  --surface: 251 250 246;
+  --paper: 247 248 250;
+  --surface: 255 255 255;
   --ink: 29 27 24;
   --ink-2: 84 79 71;
   --ink-3: 112 105 95;
-  --line: 224 218 206;
-  --shadow: 60 44 28;
+  --line: 222 225 231;
+  --shadow: 28 36 52;
 
   /* Coral. `--coral` is the vivid mark; `-strong` carries white text; `-ink` is coral as text on paper. */
   --coral: 242 106 85;
@@ -46,9 +46,9 @@
     0 12px 30px -14px rgb(var(--coral) / 0.4),
     0 2px 6px rgb(var(--shadow) / 0.05);
   --raised: rgb(var(--surface));
-  --tile-top: #fffdf9;
-  --tile-bottom: #efebe3;
-  --tile-line: #d9d2c4;
+  --tile-top: #ffffff;
+  --tile-bottom: #eef0f4;
+  --tile-line: #d6dae1;
   --tile-inner: rgb(var(--ink) / 0.06);
   --tile-glyph: #2b2824;
   --glow: 0.16;
@@ -56,9 +56,7 @@
     0 0 6px rgb(var(--coral) / calc(var(--glow) * 0.8)),
     0 0 18px rgb(var(--coral) / calc(var(--glow) * 0.55)),
     0 0 44px rgb(var(--coral) / calc(var(--glow) * 0.3));
-  --mist-opacity: 0.42;
-  --fibre-opacity: 0.09;
-  --seigaiha: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='20' viewBox='0 0 40 20'%3E%3Cg fill='%23f6f3ec' stroke='%23ddd6c8' stroke-width='0.7'%3E%3Cg id='f'%3E%3Ccircle r='20'/%3E%3Ccircle r='15.5'/%3E%3Ccircle r='11'/%3E%3Ccircle r='6.5'/%3E%3Ccircle r='2'/%3E%3C/g%3E%3Cuse href='%23f' x='40'/%3E%3Cuse href='%23f' x='20' y='10'/%3E%3Cuse href='%23f' y='20'/%3E%3Cuse href='%23f' x='40' y='20'/%3E%3C/g%3E%3C/svg%3E");
+  --seigaiha: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='20' viewBox='0 0 40 20'%3E%3Cg fill='%23f7f8fa' stroke='%23dcdfe5' stroke-width='0.7'%3E%3Cg id='f'%3E%3Ccircle r='20'/%3E%3Ccircle r='15.5'/%3E%3Ccircle r='11'/%3E%3Ccircle r='6.5'/%3E%3Ccircle r='2'/%3E%3C/g%3E%3Cuse href='%23f' x='40'/%3E%3Cuse href='%23f' x='20' y='10'/%3E%3Cuse href='%23f' y='20'/%3E%3Cuse href='%23f' x='40' y='20'/%3E%3C/g%3E%3C/svg%3E");
 
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --dur: 180ms;
@@ -96,8 +94,6 @@
   --tile-inner: rgb(255 255 255 / 0.05);
   --tile-glyph: #e8e4dc;
   --glow: 0.26;
-  --mist-opacity: 0.32;
-  --fibre-opacity: 0.045;
   --seigaiha: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='20' viewBox='0 0 40 20'%3E%3Cg fill='%23121110' stroke='%23292623' stroke-width='0.7'%3E%3Cg id='f'%3E%3Ccircle r='20'/%3E%3Ccircle r='15.5'/%3E%3Ccircle r='11'/%3E%3Ccircle r='6.5'/%3E%3Ccircle r='2'/%3E%3C/g%3E%3Cuse href='%23f' x='40'/%3E%3Cuse href='%23f' x='20' y='10'/%3E%3Cuse href='%23f' y='20'/%3E%3Cuse href='%23f' x='40' y='20'/%3E%3C/g%3E%3C/svg%3E");
 }
 
@@ -117,16 +113,6 @@
     line-height: 1.65;
     -webkit-font-smoothing: antialiased;
     font-synthesis-weight: none;
-  }
-  /* Washi: the generated paper's own fibres, lifted out and laid under every ground. Cards and panels sit clean above it. */
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    z-index: -1;
-    pointer-events: none;
-    background: rgb(var(--ink) / var(--fibre-opacity));
-    mask: url('/motifs/washi.png') 0 0 / 640px 360px repeat;
   }
   :focus-visible {
     outline: 2px solid rgb(var(--coral));
@@ -404,8 +390,7 @@
   /* ---------- Hero ---------- */
   /*
     Ground carries structure, not colour: Groundwork's 24px grid, faded from
-    one corner so it reads as paper. The ink mist from the generated sumi-e
-    sits under the stage and takes the ink colour of the current mode.
+    one corner.
   */
   .hero {
     position: relative;
@@ -427,17 +412,6 @@
       #000 10%,
       transparent 75%
     );
-  }
-  .hero-mist {
-    position: absolute;
-    right: max(0px, calc(50% - 640px));
-    bottom: -1.5rem;
-    z-index: -1;
-    width: min(940px, 100vw);
-    aspect-ratio: 784 / 422;
-    background: rgb(var(--ink) / var(--mist-opacity));
-    mask: url('/motifs/mist.png') right bottom / contain no-repeat;
-    pointer-events: none;
   }
   .hero-grid {
     display: grid;
@@ -524,71 +498,20 @@
     }
   }
 
-  /* The crafted screenshot: a strip of menu bar and the panel hanging from its item. */
+  /* The crafted screenshot: the panel on its own. */
   .desk {
     display: grid;
-    justify-items: end;
-    width: min(100%, 460px);
+    justify-items: center;
+    width: 100%;
   }
   .desk-panel {
     width: min(100%, 400px);
     height: 580px;
-    margin-top: 6px;
-    margin-right: 64px;
-  }
-  @media (max-width: 30rem) {
-    .desk-panel {
-      margin-right: 0;
-    }
   }
   .stage-caption {
     margin-top: 1rem;
     color: var(--color-ink-3);
     font-size: 0.78rem;
-  }
-  .menubar {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 2px;
-    width: 100%;
-    height: 28px;
-    padding-inline: 10px 12px;
-    border: 1px solid var(--hairline);
-    border-radius: 9px;
-    background: rgb(var(--surface) / 0.72);
-    backdrop-filter: blur(14px);
-    box-shadow: var(--lift);
-    color: var(--color-ink);
-    font-family:
-      -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
-    font-size: 12.5px;
-    font-weight: 500;
-  }
-  .menubar-item {
-    display: grid;
-    place-items: center;
-    width: 30px;
-    height: 22px;
-    border-radius: 5px;
-    opacity: 0.85;
-  }
-  .menubar-item svg {
-    width: 15px;
-    height: 15px;
-  }
-  .menubar-item-open {
-    background: rgb(var(--ink) / 0.12);
-    opacity: 1;
-  }
-  .menubar-item-open svg {
-    fill: currentColor;
-    stroke: currentColor;
-    stroke-width: 0.9;
-  }
-  .menubar-clock {
-    margin-left: 8px;
-    white-space: nowrap;
   }
 
   /* ---------- Sections ---------- */

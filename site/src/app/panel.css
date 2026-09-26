@@ -2,7 +2,7 @@
   The recreated menu bar panel. Sizes are measured off the SwiftUI snapshot
   renders (LOADOUT_SNAPSHOT) at 1x; colours are macOS window chrome, not site
   tokens, because this is a picture of a Mac app. The only site colour inside
-  it is the accent, set to coral for this page.
+  it is the app icon; the accent is macOS blue.
 */
 .mac-panel {
   --mac-bg: #ececec;
@@ -16,7 +16,7 @@
     0 1px 2px rgb(0 0 0 / 0.12), 0 0 0 0.5px rgb(0 0 0 / 0.05);
   --mac-sep: rgb(0 0 0 / 0.09);
   --mac-knob: #fff;
-  --mac-accent: rgb(var(--coral-strong));
+  --mac-accent: #007aff;
   --mac-ok: #34c759;
   --mac-down: #ff3b30;
 
@@ -54,6 +54,7 @@
   --mac-knob: #d8d8d8;
   --mac-ok: #30d158;
   --mac-down: #ff453a;
+  --mac-accent: #0a84ff;
   box-shadow:
     0 0 0 0.5px rgb(0 0 0 / 0.8),
     inset 0 0 0 0.5px rgb(255 255 255 / 0.14),
@@ -282,7 +283,7 @@
   box-shadow: 0 0 0 3px rgb(255 59 48 / 0.14);
 }
 
-/* A macOS mini switch. The accent is coral here; the app uses the system accent. */
+/* A macOS mini switch. Blue, the default system accent. */
 .mac-switch {
   position: relative;
   flex-shrink: 0;

@@ -1,6 +1,5 @@
 import { ArrowDown, ArrowUpRight } from 'lucide-react'
 import { FlowFigure, SkillCostFigure } from '@/components/figures'
-import { MenuBar } from '@/components/menu-bar'
 import { Panel } from '@/components/panel/panel'
 import type { TabId } from '@/components/panel/panel-data'
 import { PictogramTile } from '@/components/pictogram'
@@ -162,7 +161,6 @@ export default function Home() {
 
       <main id="main" tabIndex={-1}>
         <section id="top" className="hero">
-          <div className="hero-mist" aria-hidden />
           <div className="shell hero-grid">
             <div className="hero-copy">
               <p className="eyebrow">
@@ -205,7 +203,6 @@ export default function Home() {
                 装備<span>soubi · equipment</span>
               </p>
               <div className="desk">
-                <MenuBar />
                 <Panel initialTab="skills" className="desk-panel" />
               </div>
               <p className="stage-caption">
