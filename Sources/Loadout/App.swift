@@ -1319,13 +1319,14 @@ struct SkillStateSegments: View {
                 } label: {
                     Text(shortLabel(state))
                         .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? .primary : .secondary)
+                        .foregroundStyle(selected ? (state == .on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary)) : AnyShapeStyle(.secondary))
                         .lineLimit(1)
                         .frame(width: 40, height: 20)
                         .background {
                             if selected {
+                                // Only On earns the accent; every reduced state stays neutral.
                                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .fill(Theme.raised)
+                                    .fill(state == .on ? Theme.accent : Theme.raised)
                                     .shadow(color: .black.opacity(0.1), radius: 1, y: 0.5)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 5, style: .continuous)
