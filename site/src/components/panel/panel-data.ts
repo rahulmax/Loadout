@@ -28,6 +28,16 @@ export interface Plugin {
 export interface Skill {
   name: string
   state: SkillState
+  /** The skill sets disable-model-invocation, so only Slash and Off apply. */
+  authorLocked?: boolean
+  /** Projects whose own settings give this skill a different state. */
+  projects?: number
+}
+
+export interface PluginSkill {
+  name: string
+  /** Index into PLUGINS. A plugin skill is on exactly when its plugin is. */
+  plugin: number
 }
 
 export interface LocalMcp {
@@ -35,12 +45,15 @@ export interface LocalMcp {
   transport: 'HTTP' | 'STDIO'
   target: string
   enabled: boolean
+  /** Projects where /mcp turned it off. */
+  offIn?: number
 }
 
 export interface HostedMcp {
   name: string
   icon: 'figma' | 'gmail' | 'calendar' | 'drive' | 'miro' | 'slack'
   allowed: boolean
+  offIn?: number
 }
 
 export const PORTS: Port[] = [
@@ -115,19 +128,19 @@ export const PLUGINS: Plugin[] = [
 export const USER_SKILLS: Skill[] = [
   { name: 'animate', state: 'off' },
   { name: 'better-typography', state: 'name-only' },
-  { name: 'brand-voice', state: 'on' },
+  { name: 'brand-voice', state: 'on', projects: 2 },
   { name: 'changelog', state: 'user-invocable-only' },
   { name: 'color-audit', state: 'name-only' },
-  { name: 'deploy-preview', state: 'user-invocable-only' },
+  { name: 'deploy-preview', state: 'user-invocable-only', authorLocked: true },
   { name: 'haiku-commit', state: 'on' },
   { name: 'layout-grid', state: 'off' },
   { name: 'release-notes', state: 'off' },
 ]
 
-export const PLUGIN_SKILLS: Skill[] = [
-  { name: 'frontend-design', state: 'on' },
-  { name: 'figma-implement', state: 'name-only' },
-  { name: 'swift-concurrency', state: 'off' },
+export const PLUGIN_SKILLS: PluginSkill[] = [
+  { name: 'figma-implement', plugin: 1 },
+  { name: 'frontend-design', plugin: 2 },
+  { name: 'browser-test', plugin: 3 },
 ]
 
 export const LOCAL_MCPS: LocalMcp[] = [
@@ -141,7 +154,8 @@ export const LOCAL_MCPS: LocalMcp[] = [
     name: 'github',
     transport: 'STDIO',
     target: 'npx -y @modelcontextprotocol/server-github',
-    enabled: false,
+    enabled: true,
+    offIn: 2,
   },
   {
     name: 'postgres',
@@ -157,20 +171,30 @@ export const HOSTED_MCPS: HostedMcp[] = [
   { name: 'Google Calendar', icon: 'calendar', allowed: true },
   { name: 'Google Drive', icon: 'drive', allowed: false },
   { name: 'Miro', icon: 'miro', allowed: false },
-  { name: 'Slack', icon: 'slack', allowed: true },
+  { name: 'Slack', icon: 'slack', allowed: true, offIn: 1 },
 ]
 
 export const SKILL_STATES: { id: SkillState; label: string; tip: string }[] = [
-  { id: 'on', label: 'On', tip: 'On — full skill body available to the model' },
+  {
+    id: 'on',
+    label: 'On',
+    tip: 'On — listed with its description. The body loads only when used',
+  },
   {
     id: 'name-only',
     label: 'Name',
-    tip: 'Name only — ~150 chars (name + description), keeps it discoverable',
+    tip: 'Name — listed by name only, without the description',
   },
   {
     id: 'user-invocable-only',
     label: 'Slash',
-    tip: 'Slash only — invocable as /skill-name, hidden from model discovery',
+    tip: 'Slash — hidden from the model. You can still type /name',
   },
-  { id: 'off', label: 'Off', tip: 'Off — fully disabled' },
+  { id: 'off', label: 'Off', tip: 'Off — hidden from the model and from /' },
 ]
+
+export const AUTHOR_LOCK_TIP =
+  'This skill turns off model use itself, so it can only be Slash or Off'
+
+export const PLUGIN_SKILL_NOTE =
+  'Plugin skills ignore per-skill settings. Turn the plugin off in Plugins to drop them.'

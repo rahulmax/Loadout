@@ -9,20 +9,20 @@ const REPO = 'https://github.com/rahulmax/Loadout'
 
 const GAPS = [
   {
+    command: '/skills',
+    body: 'Four states and a token count per skill. It saves to this project’s settings.local.json, so every other project keeps the old state.',
+  },
+  {
+    command: '/mcp',
+    body: 'Disable is saved, but for this project only. Open a new folder and the server is back.',
+  },
+  {
     command: '/plugin disable',
-    body: 'Skills and agents go. A plugin’s bundled MCP servers can stay in mcpServers and keep advertising their tools.',
+    body: 'Global and complete: skills, agents and MCP servers all go. It’s also the only switch for a plugin’s skills.',
   },
   {
-    command: '/mcp disconnect',
-    body: 'Not a block. Tools can come back on reconnect, and nothing stops them loading next session.',
-  },
-  {
-    command: 'skillOverrides',
-    body: 'The biggest saving has no UI. Name-only and slash-only mean hand-editing settings.json.',
-  },
-  {
-    command: '~/.claude/skills/',
-    body: 'Your own skills can’t be reached from claude plugin commands at all.',
+    command: 'deniedMcpServers',
+    body: 'The one block that holds in every project. No UI: you type server names and URLs into settings.json.',
   },
 ]
 
@@ -51,7 +51,7 @@ const FEATURES: {
     kanji: '具',
     name: 'Plugins',
     title: 'One switch per plugin.',
-    body: 'Every installed plugin with its version and marketplace. The switch writes enabledPlugins, the field Claude Code reads when a session starts.',
+    body: 'Every installed plugin with its version and marketplace. The switch writes enabledPlugins. Off takes the plugin’s skills, agents and MCP servers with it.',
     points: [
       'Reads installed_plugins.json',
       'New sessions pick up the change',
@@ -63,10 +63,10 @@ const FEATURES: {
     kanji: '技',
     name: 'Skills',
     title: 'Four states, one tap each.',
-    body: 'On, Name, Slash or Off for every skill: the ones plugins bring and the ones in your own ~/.claude/skills. All four states stay visible, so nothing hides behind a menu.',
+    body: 'On, Name, Slash or Off for every skill in ~/.claude/skills, set once for every project. Plugin skills are listed with their plugin. Claude Code ignores per-skill settings for them, so the plugin switch is the one that counts.',
     points: [
-      'Writes skillOverrides',
-      'Only On takes the accent. Reduced states stay quiet',
+      'Writes skillOverrides in your user settings',
+      'A folder marker shows projects that set their own state',
       'Turn all off, with a two-step confirm',
     ],
   },
@@ -74,30 +74,44 @@ const FEATURES: {
     tab: 'mcp',
     kanji: '繋',
     name: 'MCP',
-    title: 'Blocked, not just disconnected.',
-    body: 'Local servers move between mcpServers and a parked list in ~/.claude.json. claude.ai integrations go on deniedMcpServers, the one field that actually keeps them out.',
+    title: 'Off in every project, not just this one.',
+    body: 'Local servers and claude.ai integrations both go on deniedMcpServers, the block list Claude Code checks in every project. Each server’s config stays where it is, so turning it back on is one click.',
     points: [
-      'Blocked integrations stay listed, so you can turn them back on',
+      'Flags servers that /mcp turned off in some projects',
+      'Blocked integrations stay listed',
       'Live status from claude mcp list',
-      'Transport and command shown for each local server',
     ],
   },
 ]
 
 const FIELDS = [
-  ['enabledPlugins', '~/.claude/settings.json', 'Plugin on or off'],
-  [
-    'skillOverrides',
-    '~/.claude/settings.json',
-    'on · name-only · user-invocable-only · off',
-  ],
-  [
-    'deniedMcpServers',
-    '~/.claude/settings.json',
-    'claude.ai integrations to block',
-  ],
-  ['mcpServers', '~/.claude.json', 'Local MCP servers that load'],
-  ['_disabledMcpServers', '~/.claude.json', 'Local servers parked by Loadout'],
+  {
+    field: 'enabledPlugins',
+    file: '~/.claude/settings.json',
+    purpose: 'Plugin on or off, with its skills and MCP servers',
+  },
+  {
+    field: 'skillOverrides',
+    file: '~/.claude/settings.json',
+    purpose: 'on · name-only · user-invocable-only · off, per user skill',
+  },
+  {
+    field: 'deniedMcpServers',
+    file: '~/.claude/settings.json',
+    purpose: 'Servers blocked in every project, by name or URL',
+  },
+  {
+    field: 'disabledMcpServers',
+    file: '~/.claude.json, per project',
+    purpose: 'Read only. What /mcp turned off in one project',
+    readOnly: true,
+  },
+  {
+    field: 'skillOverrides',
+    file: '.claude/settings.local.json, per project',
+    purpose: 'Read only. What /skills set in one project',
+    readOnly: true,
+  },
 ]
 
 const NOTES = [
@@ -194,9 +208,10 @@ export default function Home() {
                   every session.
                 </p>
                 <p className="hero-body">
-                  It switches them where Claude actually reads, so what you turn
-                  off stays out of context. It also shows the dev servers you
-                  forgot were running.
+                  Claude Code’s own switches work one project at a time. Loadout
+                  sets them once for every project, and shows where a project
+                  keeps its own. It also shows the dev servers you forgot were
+                  running.
                 </p>
                 <div className="hero-actions">
                   <a
@@ -227,10 +242,10 @@ export default function Home() {
           <div className="shell frame">
             <BandLabel numeral="01" label="What it does" />
             <div className="frame-main">
-              <BandHead title="Four tabs. Each one writes a real field.">
+              <BandHead title="Four tabs. Every switch is global.">
                 Click the menu bar icon and the panel opens on Ports. Every
-                switch writes to your config straight away and copies the reload
-                command for you.
+                switch writes your user settings straight away and copies the
+                reload command for you.
               </BandHead>
 
               <Tabs
@@ -274,11 +289,12 @@ export default function Home() {
           <div className="shell frame">
             <BandLabel numeral="02" label="How it works" />
             <div className="frame-main">
-              <BandHead title="Off should mean out of context.">
+              <BandHead title="Off should mean off everywhere.">
                 Every plugin, skill and MCP server you install is described to
-                the model when a session starts. Loadout edits the fields Claude
-                reads, and nothing else. No daemon, no account, no patching
-                Claude Code.
+                the model when a session starts. Claude Code can switch each one
+                off, but mostly per project. Loadout writes the user-level
+                fields, reads the project ones, and touches nothing else. No
+                daemon, no account, no patching Claude Code.
               </BandHead>
 
               <Tabs
@@ -290,8 +306,8 @@ export default function Home() {
                     panel: (
                       <>
                         <p className="panel-lede">
-                          Claude Code has ways to switch things off, but they
-                          don’t all do what you’d expect.
+                          Claude Code’s own switches work. Most of them work on
+                          one project at a time.
                         </p>
                         <ul className="spec-table">
                           {GAPS.map((gap) => (
@@ -310,8 +326,8 @@ export default function Home() {
                     panel: (
                       <>
                         <p className="panel-lede">
-                          One skill, four states. What each adds to context,
-                          every session.
+                          One skill, four states. What each adds to every
+                          session, before you type anything.
                         </p>
                         <SkillCostFigure />
                       </>
@@ -324,7 +340,7 @@ export default function Home() {
                       <>
                         <p className="panel-lede">
                           Loadout reads your config when it opens and writes the
-                          same fields you would edit by hand.
+                          same user-level fields you would edit by hand.
                         </p>
                         <FlowFigure />
                         <ul className="notes">
@@ -345,7 +361,7 @@ export default function Home() {
                       <div className="table-wrap">
                         <table className="field-table">
                           <caption className="sr-only">
-                            Settings fields Loadout writes
+                            Settings fields Loadout writes and reads
                           </caption>
                           <thead>
                             <tr>
@@ -355,13 +371,13 @@ export default function Home() {
                             </tr>
                           </thead>
                           <tbody>
-                            {FIELDS.map(([field, file, purpose]) => (
-                              <tr key={field}>
+                            {FIELDS.map((f) => (
+                              <tr key={f.field + f.file}>
                                 <td>
-                                  <code>{field}</code>
+                                  <code>{f.field}</code>
                                 </td>
-                                <td className="field-file">{file}</td>
-                                <td>{purpose}</td>
+                                <td className="field-file">{f.file}</td>
+                                <td>{f.purpose}</td>
                               </tr>
                             ))}
                           </tbody>

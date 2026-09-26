@@ -6,6 +6,7 @@ import {
   ClipboardList,
   Copy,
   Folder,
+  FolderOpen,
   Globe,
   Hash,
   Mail,
@@ -23,8 +24,10 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { Pictogram } from '../pictogram'
 import {
+  AUTHOR_LOCK_TIP,
   HOSTED_MCPS,
   LOCAL_MCPS,
+  PLUGIN_SKILL_NOTE,
   PLUGIN_SKILLS,
   PLUGINS,
   PORTS,
@@ -68,9 +71,7 @@ export function Panel({
   const [tab, setTab] = useState<TabId>(initialTab)
   const [plugins, setPlugins] = useState(() => PLUGINS.map((p) => p.enabled))
   const [skills, setSkills] = useState<Record<string, SkillState>>(() =>
-    Object.fromEntries(
-      [...USER_SKILLS, ...PLUGIN_SKILLS].map((s) => [s.name, s.state]),
-    ),
+    Object.fromEntries(USER_SKILLS.map((s) => [s.name, s.state])),
   )
   const [local, setLocal] = useState(() => LOCAL_MCPS.map((m) => m.enabled))
   const [hosted, setHosted] = useState(() => HOSTED_MCPS.map((m) => m.allowed))
@@ -92,7 +93,7 @@ export function Panel({
   const counts: Record<TabId, number> = {
     ports: PORTS.length,
     plugins: PLUGINS.length,
-    skills: skillValues.length,
+    skills: skillValues.length + PLUGIN_SKILLS.length,
     mcp: LOCAL_MCPS.length + HOSTED_MCPS.length,
   }
 
@@ -167,39 +168,64 @@ export function Panel({
         {tab === 'skills' && (
           <>
             <Toolbar
-              summary={skillSummary(skillValues)}
+              summary={skillSummary(skillValues, PLUGIN_SKILLS.length)}
               action="Turn all off"
             />
-            {(
-              [
-                ['User', USER_SKILLS],
-                ['Plugin', PLUGIN_SKILLS],
-              ] as const
-            ).map(([section, list]) => (
-              <section key={section}>
-                <SectionLabel name={section} count={list.length} />
-                <ul className="mac-list">
-                  {list.map((s) => (
-                    <li key={s.name} className="mac-row mac-row-skill">
-                      <span
-                        className="mac-name"
-                        data-dim={skills[s.name] === 'off' || undefined}
-                      >
-                        {s.name}
-                      </span>
-                      <Segmented
-                        value={skills[s.name]}
-                        label={s.name}
-                        onChange={(state) => {
-                          setSkills({ ...skills, [s.name]: state })
-                          didWrite()
-                        }}
-                      />
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            ))}
+            <SectionLabel name="User" count={USER_SKILLS.length} />
+            <ul className="mac-list">
+              {USER_SKILLS.map((s) => (
+                <li key={s.name} className="mac-row mac-row-skill">
+                  <span
+                    className="mac-name"
+                    data-dim={skills[s.name] === 'off' || undefined}
+                  >
+                    {s.name}
+                  </span>
+                  {s.projects ? (
+                    <Marker
+                      label={`${s.projects} projects`}
+                      tip="These projects set their own state, which wins over this one"
+                    />
+                  ) : null}
+                  <Segmented
+                    value={skills[s.name]}
+                    label={s.name}
+                    allowed={
+                      s.authorLocked
+                        ? ['user-invocable-only', 'off']
+                        : undefined
+                    }
+                    onChange={(state) => {
+                      setSkills({ ...skills, [s.name]: state })
+                      didWrite()
+                    }}
+                  />
+                </li>
+              ))}
+            </ul>
+            <SectionLabel name="Plugins" count={PLUGIN_SKILLS.length} />
+            <ul className="mac-list">
+              {PLUGIN_SKILLS.map((s) => (
+                <li key={s.name} className="mac-row mac-row-skill">
+                  <span className="mac-row-text">
+                    <span
+                      className="mac-name"
+                      data-dim={!plugins[s.plugin] || undefined}
+                    >
+                      {s.name}
+                    </span>
+                    <span className="mac-sub">{PLUGINS[s.plugin].name}</span>
+                  </span>
+                  <span
+                    className="mac-lock"
+                    title="Plugin skills ignore skillOverrides. Use the plugin's switch in Plugins."
+                  >
+                    {plugins[s.plugin] ? 'On with plugin' : 'Off with plugin'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="mac-note">{PLUGIN_SKILL_NOTE}</p>
           </>
         )}
 
@@ -231,6 +257,12 @@ export function Panel({
                       {m.target}
                     </span>
                   </span>
+                  {local[i] && m.offIn ? (
+                    <Marker
+                      label={`Off in ${m.offIn}`}
+                      tip="Turned off with /mcp in some projects"
+                    />
+                  ) : null}
                   <Switch
                     on={local[i]}
                     label={m.name}
@@ -266,6 +298,12 @@ export function Panel({
                         {hosted[i] ? 'Connected' : 'Blocked locally'}
                       </span>
                     </span>
+                    {hosted[i] && m.offIn ? (
+                      <Marker
+                        label={`Off in ${m.offIn}`}
+                        tip="Turned off with /mcp in some projects"
+                      />
+                    ) : null}
                     <Switch
                       on={hosted[i]}
                       label={m.name}
@@ -300,8 +338,11 @@ export function Panel({
   )
 }
 
-/** "12 on · 3 trimmed · 80 off", skipping empty buckets, as the app does. */
-function skillSummary(states: SkillState[]) {
+/**
+ * "12 on · 3 trimmed · 8 off · 20 from plugins", skipping empty buckets, as
+ * the app does.
+ */
+function skillSummary(states: SkillState[], fromPlugins: number) {
   const on = states.filter((s) => s === 'on').length
   const off = states.filter((s) => s === 'off').length
   const trimmed = states.length - on - off
@@ -309,6 +350,7 @@ function skillSummary(states: SkillState[]) {
     on && `${on} on`,
     trimmed && `${trimmed} trimmed`,
     off && `${off} off`,
+    fromPlugins && `${fromPlugins} from plugins`,
   ]
     .filter(Boolean)
     .join(' · ')
@@ -396,13 +438,25 @@ function Switch({
   )
 }
 
+/** Quiet note that some projects differ, with the detail in a tooltip. */
+function Marker({ label, tip }: { label: string; tip: string }) {
+  return (
+    <span className="mac-marker" title={tip}>
+      <FolderOpen size={11} strokeWidth={1.8} aria-hidden />
+      {label}
+    </span>
+  )
+}
+
 function Segmented({
   value,
   label,
+  allowed,
   onChange,
 }: {
   value: SkillState
   label: string
+  allowed?: SkillState[]
   onChange: (state: SkillState) => void
 }) {
   const index = SKILL_STATES.findIndex((s) => s.id === value)
@@ -421,7 +475,8 @@ function Segmented({
           type="button"
           role="radio"
           aria-checked={value === s.id}
-          title={s.tip}
+          disabled={allowed && !allowed.includes(s.id)}
+          title={allowed && !allowed.includes(s.id) ? AUTHOR_LOCK_TIP : s.tip}
           onClick={() => onChange(s.id)}
         >
           {s.label}

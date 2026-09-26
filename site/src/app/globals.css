@@ -651,6 +651,34 @@
     color: var(--color-ink-3);
     font-size: 0.82rem;
   }
+  .cost-set {
+    display: grid;
+    margin-top: 2.5rem;
+    border-top: 1px solid var(--rule);
+  }
+  @media (min-width: 40rem) {
+    .cost-set {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  .cost-set div {
+    display: grid;
+    gap: 0.25rem;
+    padding-block: 1rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  .cost-set dt {
+    color: var(--color-ink-3);
+    font-size: 0.82rem;
+  }
+  .cost-set dd {
+    font: 500 1.35rem var(--font-mono);
+    letter-spacing: -0.02em;
+  }
+  .cost-set + .cost-foot {
+    padding-top: 0;
+    border-top: 0;
+  }
   .cost-foot {
     margin-top: 2rem;
     padding-top: 1rem;
@@ -770,6 +798,7 @@
   }
   .install-grid {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 3rem;
   }
   @media (min-width: 60rem) {
@@ -810,6 +839,7 @@
     letter-spacing: -0.04em;
   }
   .install-code {
+    overflow-x: auto;
     padding: 1.5rem;
     border-radius: 14px;
     background: rgb(0 0 0 / 0.2);
