@@ -392,10 +392,16 @@ enum PortActions {
     /// SIGTERM, then SIGKILL after a short grace period if it's still alive.
     /// Blocking — always call from a detached task, never from the main actor.
     static func killGraceful(pid: pid_t) {
-        guard pidExists(pid) else { return }
-        kill(pid, SIGTERM)
+        killGraceful(pids: [pid])
+    }
+
+    /// Signals every pid at once so N servers share one grace period instead of N.
+    static func killGraceful(pids: [pid_t]) {
+        let alive = Set(pids).filter(pidExists)
+        guard !alive.isEmpty else { return }
+        for pid in alive { kill(pid, SIGTERM) }
         Thread.sleep(forTimeInterval: 1.5)
-        if pidExists(pid) {
+        for pid in alive where pidExists(pid) {
             kill(pid, SIGKILL)
         }
     }
@@ -513,9 +519,7 @@ final class PortsStore: ObservableObject {
     func killAll() {
         let pids = ports.map { $0.pid }
         Task.detached {
-            for pid in pids {
-                PortActions.killGraceful(pid: pid)
-            }
+            PortActions.killGraceful(pids: pids)
             await MainActor.run { self.refresh() }
         }
     }

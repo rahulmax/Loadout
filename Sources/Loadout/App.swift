@@ -9,9 +9,20 @@ struct LoadoutApp: App {
         MenuBarExtra {
             MenuView(store: store)
         } label: {
-            Image(systemName: "puzzlepiece.extension.fill")
+            Image(nsImage: menuBarIcon)
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// Backpack template image from Resources/ (copied into the bundle by build.sh).
+    /// Falls back to an SF Symbol when run outside the .app bundle (e.g. `swift run`).
+    private var menuBarIcon: NSImage {
+        let image = NSImage(named: "MenuBarIcon")
+            ?? NSImage(systemSymbolName: "backpack", accessibilityDescription: "Loadout")
+            ?? NSImage()
+        image.size = NSSize(width: 18, height: 18)
+        image.isTemplate = true
+        return image
     }
 }
 
