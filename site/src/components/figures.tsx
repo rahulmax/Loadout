@@ -1,20 +1,21 @@
 /*
   What one skill costs in each state. The example is an 18 KB skill body,
   inside the 5–50 KB range the README gives; name-only is ~150 characters.
+  Tokens at ~4 characters each: ~4.5k for the body, ~40 for name-only.
   Bars are to scale, which is the point: the name-only sliver is real.
 */
 const COSTS = [
   {
     state: 'On',
-    cost: '18 KB',
+    cost: '~4.5k tokens',
     note: 'Full body loaded every session',
     width: 100,
   },
   {
     state: 'Name',
-    cost: '~150 B',
+    cost: '~40 tokens',
     note: 'Name and description. Claude can still find it',
-    width: 0.83,
+    width: 0.89,
   },
   {
     state: 'Slash',
@@ -29,7 +30,8 @@ export function SkillCostFigure() {
   return (
     <figure className="cost-figure">
       <figcaption className="sr-only">
-        Context one 18 KB skill adds per session, in each of its four states.
+        Context one 4.5k-token skill adds per session, in each of its four
+        states.
       </figcaption>
       <ol className="cost-rows">
         {COSTS.map((c) => (
@@ -49,8 +51,8 @@ export function SkillCostFigure() {
         ))}
       </ol>
       <p className="cost-foot">
-        Example: an 18 KB skill. Name-only is about 120 times smaller and the
-        skill stays discoverable.
+        Example: an 18 KB skill, about 4.5k tokens. Name-only is over 100 times
+        smaller and the skill stays discoverable.
       </p>
     </figure>
   )

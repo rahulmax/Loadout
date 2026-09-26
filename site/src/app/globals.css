@@ -22,7 +22,6 @@
   color-scheme: light;
   --paper: 244 245 247;
   --surface: 255 255 255;
-  --plate: 232 234 238;
   --ink: 17 18 20;
   --ink-2: 70 74 82;
   --ink-3: 108 113 122;
@@ -45,7 +44,6 @@
   color-scheme: dark;
   --paper: 13 14 16;
   --surface: 22 23 26;
-  --plate: 25 27 31;
   --ink: 236 238 242;
   --ink-2: 178 183 192;
   --ink-3: 132 138 148;
@@ -430,7 +428,7 @@
   }
   @media (min-width: 72rem) {
     .hero-main {
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       align-items: center;
       gap: 3rem;
     }
@@ -462,20 +460,11 @@
     margin-top: 2.5rem;
   }
 
-  /* A plate: a flat grey sheet the recreated panel sits on, like a product shot. */
+  /* The recreated panel sits bare, centred in its column both ways. */
   .hero-stage,
   .plate {
     display: grid;
-    justify-items: center;
-    padding: 1.75rem 1rem;
-    border-radius: 22px;
-    background: rgb(var(--plate));
-  }
-  @media (min-width: 40rem) {
-    .hero-stage,
-    .plate {
-      padding: 2.25rem;
-    }
+    place-items: center;
   }
   .stage-panel {
     width: min(100%, 400px);
@@ -543,8 +532,8 @@
   }
   @media (min-width: 60rem) {
     .feature {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 27rem);
-      align-items: start;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: center;
       gap: 3rem;
     }
   }
@@ -628,7 +617,7 @@
   }
   .cost-row {
     display: grid;
-    grid-template-columns: 3.5rem minmax(0, 1fr) 4rem;
+    grid-template-columns: 3.5rem minmax(0, 1fr) 7.5rem;
     grid-template-areas:
       'state track value'
       '. note note';
