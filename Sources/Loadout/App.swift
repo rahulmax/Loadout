@@ -5,6 +5,12 @@ import AppKit
 struct LoadoutApp: App {
     @StateObject private var store = AppStore()
 
+    init() {
+        #if DEBUG
+        SnapshotRenderer.runIfRequested()
+        #endif
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuView(store: store)
@@ -98,7 +104,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var claudeAiIntegrations: [ClaudeAiIntegration] = []
     @Published private(set) var loadingClaudeAi: Bool = false
     @Published private(set) var lastError: String?
-    @Published private(set) var lastToggledAt: Date?
+    /// True for a few seconds after a toggle copies `/reload-plugins`; drives the footer confirmation.
+    @Published private(set) var justCopied = false
+    private var copiedResetTask: Task<Void, Never>?
 
     private let home = FileManager.default.homeDirectoryForCurrentUser
     private var installedUrl: URL { home.appendingPathComponent(".claude/plugins/installed_plugins.json") }
@@ -400,7 +408,12 @@ final class AppStore: ObservableObject {
 
     private func markToggled() {
         copyReloadCommand()
-        lastToggledAt = Date()
+        justCopied = true
+        copiedResetTask?.cancel()
+        copiedResetTask = Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if !Task.isCancelled { justCopied = false }
+        }
     }
 
     private func readJSON(_ url: URL) throws -> [String: Any] {
@@ -490,12 +503,346 @@ func parseMcpList(_ text: String) -> [ParsedMcpEntry] {
     return result
 }
 
+// MARK: - Design system
+
+/// Tokens shared by every tab. Brand blue comes from the app icon (Carbon blue 60 in
+/// light mode, blue 50 in dark). Accent is reserved for switches and the brand mark;
+/// everything else stays neutral so the panel reads calm with 100 rows on screen.
+enum Theme {
+    static let accent = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 0x45 / 255, green: 0x89 / 255, blue: 0xFF / 255, alpha: 1)
+            : NSColor(srgbRed: 0x0F / 255, green: 0x62 / 255, blue: 0xFE / 255, alpha: 1)
+    })
+    static let brandTop = Color(red: 0x45 / 255, green: 0x89 / 255, blue: 0xFF / 255)
+    static let brandBottom = Color(red: 0x00 / 255, green: 0x43 / 255, blue: 0xCE / 255)
+
+    /// Selected thumb surface: white in light mode, a lifted grey in dark.
+    static let raised = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(white: 1, alpha: 0.15)
+            : NSColor(white: 1, alpha: 1)
+    })
+    static let track = Color.primary.opacity(0.06)
+    static let hover = Color.primary.opacity(0.055)
+    static let hoverStrong = Color.primary.opacity(0.09)
+    static let hairline = Color.primary.opacity(0.08)
+
+    /// Surfaces (hover backgrounds, tab track) sit `rowInset` from the panel edge and pad
+    /// `rowPadding` inside, so all text lines up on the `gutter`.
+    static let gutter: CGFloat = 16
+    static let rowInset: CGFloat = 8
+    static let rowPadding: CGFloat = 8
+    static let rowRadius: CGFloat = 8
+}
+
+extension Font {
+    static let panelTitle = Font.system(size: 13, weight: .semibold)
+    static let rowTitle = Font.system(size: 13, weight: .medium)
+    static let rowSubtitle = Font.system(size: 11.5)
+    static let rowMeta = Font.system(size: 10.5).monospacedDigit()
+    static let sectionLabel = Font.system(size: 10.5, weight: .semibold)
+    static let control = Font.system(size: 11, weight: .medium)
+    static let code = Font.system(size: 10.5, weight: .medium, design: .monospaced)
+}
+
+enum Motion {
+    /// Sliding thumbs (tab bar, skill states). Critically damped, no bounce.
+    static let slide = Animation.spring(duration: 0.25, bounce: 0)
+    /// Hover and color feedback. Fires constantly, so it stays short.
+    static let hover = Animation.easeOut(duration: 0.12)
+    /// Press-down scale.
+    static let press = Animation.easeOut(duration: 0.12)
+    /// Disclosure, list inserts/removals and the footer confirmation. Strong ease-out.
+    static let reveal = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.24)
+}
+
+private struct BlurFade: ViewModifier {
+    let scale: CGFloat
+    let blur: CGFloat
+    let opacity: Double
+    let y: CGFloat
+    func body(content: Content) -> some View {
+        content.scaleEffect(scale).blur(radius: blur).opacity(opacity).offset(y: y)
+    }
+}
+
+extension AnyTransition {
+    /// Contextual icon swap: scale 0.25 → 1, opacity 0 → 1, blur 4 → 0.
+    static let iconSwap = AnyTransition.modifier(
+        active: BlurFade(scale: 0.25, blur: 4, opacity: 0, y: 0),
+        identity: BlurFade(scale: 1, blur: 0, opacity: 1, y: 0)
+    )
+    /// Label swap: a small rise with blur so the two labels read as one changing.
+    static let textSwap = AnyTransition.modifier(
+        active: BlurFade(scale: 1, blur: 2, opacity: 0, y: 3),
+        identity: BlurFade(scale: 1, blur: 0, opacity: 1, y: 0)
+    )
+}
+
+/// `scale(0.96)` on press so every button confirms the click.
+struct PressableButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(Motion.press, value: configuration.isPressed)
+    }
+}
+
+/// Rounded hover surface inset from the panel edge. Content lands on the gutter.
+private struct RowChrome: ViewModifier {
+    let verticalPadding: CGFloat
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, Theme.rowPadding)
+            .padding(.vertical, verticalPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                    .fill(hovering ? Theme.hover : .clear)
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .animation(Motion.hover, value: hovering)
+            .padding(.horizontal, Theme.rowInset)
+    }
+}
+
+extension View {
+    func rowChrome(verticalPadding: CGFloat = 7) -> some View {
+        modifier(RowChrome(verticalPadding: verticalPadding))
+    }
+}
+
+/// Square icon button with a hover surface. Neutral by design: destructive intent is
+/// carried by the label and tooltip, not by red.
+struct IconButton: View {
+    let systemName: String
+    let help: String
+    var rotation: Angle = .zero
+    let action: () -> Void
+
+    @State private var hovering = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 11.5, weight: .medium))
+                .rotationEffect(rotation)
+                .foregroundStyle(isEnabled ? (hovering ? Color.primary : Color.secondary) : Color.secondary.opacity(0.4))
+                .frame(width: 26, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(hovering && isEnabled ? Theme.hoverStrong : .clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableButtonStyle())
+        .onHover { hovering = $0 }
+        .animation(Motion.hover, value: hovering)
+        .help(help)
+    }
+}
+
+/// Small monogram or symbol tile that anchors a row, tinted per item.
+struct Tile: View {
+    enum Glyph {
+        case monogram(String)
+        case symbol(String)
+    }
+
+    let glyph: Glyph
+    let tint: Color
+    var dimmed = false
+
+    var body: some View {
+        let color = dimmed ? Color.secondary : tint
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(color.opacity(dimmed ? 0.12 : 0.15))
+            switch glyph {
+            case .monogram(let text):
+                Text(verbatim: text).font(.system(size: 12, weight: .semibold, design: .rounded))
+            case .symbol(let name):
+                Image(systemName: name).font(.system(size: 11.5, weight: .medium))
+            }
+        }
+        .foregroundStyle(color)
+        .frame(width: 26, height: 26)
+        .animation(Motion.hover, value: dimmed)
+    }
+
+    /// Stable per-name tint. Swift's `hashValue` is seeded per launch, so hash by hand.
+    static func tint(for key: String) -> Color {
+        let palette: [Color] = [.blue, .indigo, .purple, .pink, .orange, .teal, .green, .cyan]
+        let hash = key.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0x7FFF_FFFF }
+        return palette[hash % palette.count]
+    }
+
+    static func monogram(for name: String) -> String {
+        String(name.first(where: { $0.isLetter || $0.isNumber }) ?? "•").uppercased()
+    }
+}
+
+struct BrandMark: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(LinearGradient(colors: [Theme.brandTop, Theme.brandBottom], startPoint: .top, endPoint: .bottom))
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.2), lineWidth: 0.5)
+            BrandMark.glyph
+                .foregroundStyle(.white)
+                .frame(width: 14, height: 14)
+        }
+        .frame(width: 22, height: 22)
+        .shadow(color: Theme.brandBottom.opacity(0.28), radius: 1.5, y: 1)
+    }
+
+    /// The backpack template from Resources/, or an SF Symbol under `swift run`.
+    private static var glyph: some View {
+        Group {
+            if let image = NSImage(named: "MenuBarIcon") {
+                Image(nsImage: image).resizable().renderingMode(.template).scaledToFit()
+            } else {
+                Image(systemName: "backpack.fill").resizable().scaledToFit()
+            }
+        }
+    }
+}
+
+/// Uppercase group label with an optional count, sitting on the gutter.
+struct SectionLabel: View {
+    let title: String
+    var count: Int?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title.uppercased())
+                .tracking(0.6)
+                .foregroundStyle(.tertiary)
+            if let count {
+                Text(verbatim: "\(count)").foregroundStyle(.quaternary)
+            }
+        }
+        .font(.sectionLabel)
+        .monospacedDigit()
+        .padding(.horizontal, Theme.gutter)
+        .padding(.top, 14)
+        .padding(.bottom, 4)
+    }
+}
+
+/// Summary line at the top of a tab, with an optional trailing action.
+struct ListToolbar<Trailing: View>: View {
+    let summary: String
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(verbatim: summary)
+                .font(.rowSubtitle)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            trailing
+        }
+        .frame(height: 28)
+        .padding(.leading, Theme.gutter)
+        .padding(.trailing, Theme.rowInset + 4)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+    }
+}
+
+extension ListToolbar where Trailing == EmptyView {
+    init(summary: String) {
+        self.init(summary: summary) { EmptyView() }
+    }
+}
+
+struct EmptyState: View {
+    let symbol: String
+    let title: String
+    var message: String?
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 22, weight: .light))
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 4)
+            Text(verbatim: title)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(.secondary)
+            if let message {
+                Text(verbatim: message)
+                    .font(.rowSubtitle)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 40)
+        .padding(.vertical, 56)
+    }
+}
+
+/// Inline `code` chip, used for the slash command in the footer.
+struct CodeChip: View {
+    let text: String
+    var body: some View {
+        Text(verbatim: text)
+            .font(.code)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Theme.track))
+    }
+}
+
+/// Status dot with a soft halo so it reads at 7pt on vibrancy.
+struct StatusDot: View {
+    let color: Color
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+            .background(Circle().fill(color.opacity(0.2)).frame(width: 12, height: 12))
+            .frame(width: 12, height: 12)
+    }
+}
+
+struct LoadoutSwitch: View {
+    let isOn: Bool
+    let onToggle: () -> Void
+    var body: some View {
+        Toggle("", isOn: Binding(get: { isOn }, set: { _ in onToggle() }))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .controlSize(.mini)
+            .tint(Theme.accent)
+    }
+}
+
 // MARK: - Views
 
 struct MenuView: View {
     @ObservedObject var store: AppStore
     @StateObject private var portsStore = PortsStore()
-    @State private var tab: Tab = .ports
+    @State private var tab: Tab
+    @State private var refreshSpins = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let fixedHeight: CGFloat?
+
+    init(store: AppStore, initialTab: Tab = .ports, fixedHeight: CGFloat? = nil) {
+        self.store = store
+        self._tab = State(initialValue: initialTab)
+        self.fixedHeight = fixedHeight
+    }
 
     enum Tab: String, CaseIterable, Identifiable {
         case ports = "Ports"
@@ -503,6 +850,14 @@ struct MenuView: View {
         case skills = "Skills"
         case mcps = "MCP"
         var id: String { rawValue }
+        var symbol: String {
+            switch self {
+            case .ports: return "dot.radiowaves.left.and.right"
+            case .plugins: return "puzzlepiece.extension"
+            case .skills: return "sparkles"
+            case .mcps: return "server.rack"
+            }
+        }
     }
 
     private func count(for tab: Tab) -> Int {
@@ -517,22 +872,16 @@ struct MenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Divider()
 
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases) { item in
-                    Text("\(item.rawValue) \(count(for: item))").tag(item)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            TabBar(selection: $tab, count: count(for:))
+                .padding(.horizontal, Theme.rowInset)
+                .padding(.bottom, 10)
 
             if let error = store.lastError {
                 ErrorBanner(message: error)
-                Divider()
             }
+
+            Rectangle().fill(Theme.hairline).frame(height: 1)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -543,90 +892,204 @@ struct MenuView: View {
                     case .mcps: MCPsSection(store: store)
                     }
                 }
+                .padding(.bottom, 8)
             }
-            .scrollIndicators(.visible)
+            .scrollIndicators(.automatic)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Divider()
+            Rectangle().fill(Theme.hairline).frame(height: 1)
             footer
         }
         .frame(
             width: 440,
-            height: min(1100, (NSScreen.main?.visibleFrame.height ?? 1000) - 80)
+            height: fixedHeight ?? min(1100, (NSScreen.main?.visibleFrame.height ?? 1000) - 80)
         )
         .onAppear { portsStore.refresh() }
     }
 
     private var header: some View {
-        HStack {
-            Text("Loadout")
-                .font(.system(size: 13, weight: .semibold))
+        HStack(spacing: 8) {
+            BrandMark()
+            Text("Loadout").font(.panelTitle)
             Spacer()
-            Button {
+            IconButton(
+                systemName: "arrow.clockwise",
+                help: "Reload from disk",
+                rotation: .degrees(Double(refreshSpins) * 360)
+            ) {
+                if !reduceMotion {
+                    withAnimation(.timingCurve(0.77, 0, 0.175, 1, duration: 0.6)) { refreshSpins += 1 }
+                }
                 store.reload()
                 portsStore.refresh()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11, weight: .medium))
             }
-            .buttonStyle(.plain)
-            .help("Refresh from disk")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.leading, Theme.gutter)
+        .padding(.trailing, Theme.rowInset + 2)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
     }
 
     private var footer: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let toggledAt = store.lastToggledAt, Date().timeIntervalSince(toggledAt) < 8 {
-                HStack(spacing: 6) {
-                    Image(systemName: "doc.on.clipboard.fill")
-                        .font(.system(size: 10))
+        HStack(spacing: 7) {
+            ZStack {
+                if store.justCopied {
+                    Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                    Text("Copied ").font(.system(size: 11)).foregroundStyle(.secondary)
-                    + Text("/reload-plugins").font(.system(size: 11, design: .monospaced))
-                    + Text(" — paste in active session").font(.system(size: 11)).foregroundStyle(.secondary)
+                        .transition(.iconSwap)
+                } else {
+                    Image(systemName: "doc.on.clipboard")
+                        .foregroundStyle(.tertiary)
+                        .transition(.iconSwap)
                 }
-            } else {
-                Text("Toggling copies ").font(.system(size: 11)).foregroundStyle(.secondary)
-                + Text("/reload-plugins").font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
-                + Text(" — paste it in your active Claude session.").font(.system(size: 11)).foregroundStyle(.secondary)
             }
+            .font(.system(size: 11, weight: .medium))
+            .frame(width: 14)
 
-            HStack {
-                Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+            ZStack(alignment: .leading) {
+                if store.justCopied {
+                    HStack(spacing: 4) {
+                        Text("Copied")
+                        CodeChip(text: "/reload-plugins")
+                        Text("· paste in Claude")
+                    }
+                    .transition(.textSwap)
+                } else {
+                    HStack(spacing: 4) {
+                        Text("Changes copy")
+                        CodeChip(text: "/reload-plugins")
+                    }
+                    .transition(.textSwap)
+                }
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+
+            Spacer(minLength: 8)
+
+            QuitButton()
+        }
+        .animation(reduceMotion ? nil : Motion.reveal, value: store.justCopied)
+        .padding(.leading, Theme.gutter)
+        .padding(.trailing, Theme.rowInset + 2)
+        .frame(height: 40)
+    }
+}
+
+/// Segmented tab bar with a sliding raised thumb. Counts sit beside each label.
+struct TabBar: View {
+    @Binding var selection: MenuView.Tab
+    let count: (MenuView.Tab) -> Int
+
+    @Namespace private var thumb
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(MenuView.Tab.allCases) { item in
+                let selected = item == selection
+                Button {
+                    selection = item
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: item.symbol)
+                            .font(.system(size: 11, weight: .medium))
+                        Text(item.rawValue)
+                            .font(.system(size: 12, weight: .medium))
+                        Text(verbatim: "\(count(item))")
+                            .font(.system(size: 11, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.tertiary)
+                    }
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 26)
+                    .background {
+                        if selected {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Theme.raised)
+                                .shadow(color: .black.opacity(0.1), radius: 1, y: 0.5)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .strokeBorder(Color.black.opacity(0.04), lineWidth: 0.5)
+                                )
+                                .matchedGeometryEffect(id: "thumb", in: thumb)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableButtonStyle())
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(3)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Theme.track))
+        .animation(reduceMotion ? nil : Motion.slide, value: selection)
+    }
+}
+
+struct QuitButton: View {
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            NSApplication.shared.terminate(nil)
+        } label: {
+            HStack(spacing: 5) {
+                Text("Quit").foregroundStyle(hovering ? .primary : .secondary)
+                Text("⌘Q").foregroundStyle(.tertiary)
+            }
+            .font(.control)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(hovering ? Theme.hoverStrong : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableButtonStyle())
+        .keyboardShortcut("q")
+        .onHover { hovering = $0 }
+        .animation(Motion.hover, value: hovering)
     }
 }
 
 struct ErrorBanner: View {
     let message: String
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 10)).foregroundStyle(.orange)
-            Text(message).font(.system(size: 11))
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+            Text(verbatim: message)
+                .font(.rowSubtitle)
                 .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).fill(Color.orange.opacity(0.1)))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.25), lineWidth: 0.5)
+        )
+        .padding(.horizontal, Theme.rowInset)
+        .padding(.bottom, 10)
     }
 }
 
 struct PluginsSection: View {
     @ObservedObject var store: AppStore
+
     var body: some View {
         if store.plugins.isEmpty {
-            Text("No installed plugins.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .padding(.horizontal, 12).padding(.vertical, 4)
+            EmptyState(
+                symbol: "puzzlepiece.extension",
+                title: "No plugins installed",
+                message: "Install one with /plugin in Claude Code."
+            )
         } else {
+            let enabled = store.plugins.filter(\.enabled).count
+            ListToolbar(summary: "\(enabled) of \(store.plugins.count) enabled")
             ForEach(store.plugins) { plugin in
                 PluginRow(plugin: plugin) { store.togglePlugin(plugin) }
             }
@@ -637,18 +1100,25 @@ struct PluginsSection: View {
 struct PluginRow: View {
     let plugin: InstalledPlugin
     let onToggle: () -> Void
+
     var body: some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(plugin.name).font(.system(size: 12, weight: .medium))
-                Text("\(plugin.version) · \(plugin.marketplace)")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            Tile(glyph: .monogram(Tile.monogram(for: plugin.name)), tint: Tile.tint(for: plugin.name), dimmed: !plugin.enabled)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(verbatim: plugin.name)
+                    .font(.rowTitle)
+                    .foregroundStyle(plugin.enabled ? .primary : .secondary)
+                    .lineLimit(1)
+                Text(verbatim: "\(plugin.version) · \(plugin.marketplace)")
+                    .font(.rowSubtitle)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            Spacer()
-            Toggle("", isOn: Binding(get: { plugin.enabled }, set: { _ in onToggle() }))
-                .toggleStyle(.switch).labelsHidden().controlSize(.small)
+            Spacer(minLength: 8)
+            LoadoutSwitch(isOn: plugin.enabled, onToggle: onToggle)
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
+        .rowChrome()
     }
 }
 
@@ -667,25 +1137,41 @@ struct SkillsSection: View {
             .map { (name: $0, skills: grouped[$0] ?? []) }
     }
 
+    /// "12 on · 3 trimmed · 80 off", skipping empty buckets.
+    private var summary: String {
+        var on = 0, trimmed = 0, off = 0
+        for skill in store.skills {
+            switch store.skillOverrides[skill.key] ?? .on {
+            case .on: on += 1
+            case .nameOnly, .userInvocableOnly: trimmed += 1
+            case .off: off += 1
+            }
+        }
+        let parts = [(on, "on"), (trimmed, "trimmed"), (off, "off")]
+            .filter { $0.0 > 0 }
+            .map { "\($0.0) \($0.1)" }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         if store.skills.isEmpty {
-            Text("No skills found.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .padding(.horizontal, 12).padding(.vertical, 4)
+            EmptyState(
+                symbol: "sparkles",
+                title: "No skills found",
+                message: "Skills live in ~/.claude/skills or inside installed plugins."
+            )
         } else {
-            HStack {
-                Spacer()
+            ListToolbar(summary: summary) {
                 TwoStepConfirmButton(
-                    idleLabel: "Turn off all skills",
-                    confirmLabel: "Confirm turn off all?",
-                    systemImage: "xmark.circle",
+                    idleLabel: "Turn all off",
+                    confirmLabel: "Confirm",
+                    systemImage: "power",
                     action: { store.turnOffAllSkills() }
                 )
             }
-            .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 4)
 
             if !userSkills.isEmpty {
-                SubsectionLabel(text: "User")
+                SectionLabel(title: "User", count: userSkills.count)
                 ForEach(userSkills) { skill in
                     SkillRow(
                         skill: skill,
@@ -696,7 +1182,7 @@ struct SkillsSection: View {
             }
 
             if !pluginGroups.isEmpty {
-                SubsectionLabel(text: "Plugins")
+                SectionLabel(title: "Plugins", count: pluginGroups.count)
                 ForEach(pluginGroups, id: \.name) { group in
                     PluginSkillGroup(name: group.name, skills: group.skills, store: store)
                 }
@@ -710,6 +1196,7 @@ struct PluginSkillGroup: View {
     let skills: [DiscoveredSkill]
     @ObservedObject var store: AppStore
     @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var pluginEnabled: Bool { skills.first?.pluginEnabled ?? true }
 
@@ -717,45 +1204,55 @@ struct PluginSkillGroup: View {
         skills.filter { (store.skillOverrides[$0.key] ?? .on) != .on }.count
     }
 
+    private var detail: String {
+        let noun = skills.count == 1 ? "skill" : "skills"
+        var parts = ["\(skills.count) \(noun)"]
+        if adjustedCount > 0 { parts.append("\(adjustedCount) adjusted") }
+        if !pluginEnabled { parts.insert("Plugin off", at: 0) }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.12)) { expanded.toggle() }
+                withAnimation(reduceMotion ? nil : Motion.reveal) { expanded.toggle() }
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
+                    Tile(glyph: .monogram(Tile.monogram(for: name)), tint: Tile.tint(for: name), dimmed: !pluginEnabled)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(verbatim: name)
+                            .font(.rowTitle)
+                            .foregroundStyle(pluginEnabled ? .primary : .secondary)
+                            .lineLimit(1)
+                        Text(verbatim: detail)
+                            .font(.rowSubtitle)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
-                    Text(name)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(pluginEnabled ? .primary : .tertiary)
-                    if !pluginEnabled {
-                        Text("disabled").font(.system(size: 9)).foregroundStyle(.tertiary)
-                    }
-                    Spacer()
-                    if adjustedCount > 0 {
-                        Text("\(adjustedCount) set")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.orange)
-                    }
-                    Text("\(skills.count)")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .padding(.trailing, 4)
                 }
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .contentShape(Rectangle())
+                .rowChrome()
             }
             .buttonStyle(.plain)
 
             if expanded {
-                ForEach(skills) { skill in
-                    SkillRow(
-                        skill: skill,
-                        current: store.skillOverrides[skill.key] ?? .on,
-                        onPick: { store.setSkillOverride(skill, to: $0) }
-                    )
-                    .padding(.leading, 14)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(skills) { skill in
+                        SkillRow(
+                            skill: skill,
+                            current: store.skillOverrides[skill.key] ?? .on,
+                            indent: 36,
+                            onPick: { store.setSkillOverride(skill, to: $0) }
+                        )
+                    }
                 }
+                .padding(.bottom, 4)
+                .transition(.opacity.combined(with: .offset(y: -4)))
             }
         }
     }
@@ -764,31 +1261,36 @@ struct PluginSkillGroup: View {
 struct SkillRow: View {
     let skill: DiscoveredSkill
     let current: SkillOverride
+    var indent: CGFloat = 0
     let onPick: (SkillOverride) -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(skill.displayName)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(skill.pluginEnabled ? .primary : .tertiary)
-                    .lineLimit(1)
-                Text(skill.source).font(.system(size: 10)).foregroundStyle(.secondary)
-            }
+            Text(verbatim: skill.displayName)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(current == .off ? .secondary : .primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(Text(verbatim: skill.key))
             Spacer(minLength: 8)
             SkillStateSegments(current: current, enabled: skill.pluginEnabled, onPick: onPick)
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .opacity(skill.pluginEnabled ? 1 : 0.6)
+        .padding(.leading, indent)
+        .animation(Motion.hover, value: current)
+        .rowChrome(verticalPadding: 4)
+        .opacity(skill.pluginEnabled ? 1 : 0.5)
     }
 }
 
-/// Inline four-state segmented control (On / Name / Slash / Off), replacing
-/// the old dropdown so all states are visible and pickable at a glance.
+/// Inline four-state segmented control (On / Name / Slash / Off) with a sliding thumb,
+/// so every state is visible and one click away.
 struct SkillStateSegments: View {
     let current: SkillOverride
     let enabled: Bool
     let onPick: (SkillOverride) -> Void
+
+    @Namespace private var thumb
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private func shortLabel(_ state: SkillOverride) -> String {
         switch state {
@@ -809,55 +1311,74 @@ struct SkillStateSegments: View {
     }
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 0) {
             ForEach(SkillOverride.allCases) { state in
+                let selected = state == current
                 Button {
                     onPick(state)
                 } label: {
                     Text(shortLabel(state))
-                        .font(.system(size: 10, weight: state == current ? .semibold : .regular))
+                        .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? .primary : .secondary)
                         .lineLimit(1)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(state == current ? Color.accentColor : Color.clear)
-                        .foregroundStyle(state == current ? Color.white : Color.secondary)
-                        .clipShape(Capsule())
+                        .frame(width: 40, height: 20)
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .fill(Theme.raised)
+                                    .shadow(color: .black.opacity(0.1), radius: 1, y: 0.5)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                            .strokeBorder(Color.black.opacity(0.04), lineWidth: 0.5)
+                                    )
+                                    .matchedGeometryEffect(id: "thumb", in: thumb)
+                            }
+                        }
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help(tooltip(state))
             }
         }
         .padding(2)
-        .background(Color.secondary.opacity(0.12))
-        .clipShape(Capsule())
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Theme.track))
+        .animation(reduceMotion ? nil : Motion.slide, value: current)
         .disabled(!enabled)
     }
 }
 
 struct MCPsSection: View {
     @ObservedObject var store: AppStore
+
+    private var summary: String {
+        let active = store.mcpServers.filter(\.enabled).count
+            + store.claudeAiIntegrations.filter { !$0.denied }.count
+        let total = store.mcpServers.count + store.claudeAiIntegrations.count
+        return "\(active) of \(total) allowed"
+    }
+
     var body: some View {
-        SubsectionLabel(text: "User")
+        ListToolbar(summary: summary)
+
+        SectionLabel(title: "User", count: store.mcpServers.count)
         if store.mcpServers.isEmpty {
-            Text("None.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .padding(.horizontal, 12).padding(.vertical, 4)
+            InlineNote(text: "No local MCP servers in ~/.claude.json.")
         } else {
             ForEach(store.mcpServers) { server in
                 MCPRow(server: server) { store.toggleMCPServer(server) }
             }
         }
 
-        SubsectionLabel(text: "claude.ai")
+        SectionLabel(title: "claude.ai", count: store.claudeAiIntegrations.isEmpty ? nil : store.claudeAiIntegrations.count)
         if store.loadingClaudeAi && store.claudeAiIntegrations.isEmpty {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Loading…").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("Checking connections…").font(.rowSubtitle).foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 12).padding(.vertical, 6)
+            .padding(.horizontal, Theme.gutter)
+            .padding(.vertical, 8)
         } else if store.claudeAiIntegrations.isEmpty {
-            Text("None connected.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .padding(.horizontal, 12).padding(.vertical, 4)
+            InlineNote(text: "No claude.ai integrations found.")
         } else {
             ForEach(store.claudeAiIntegrations) { integration in
                 ClaudeAiRow(integration: integration) {
@@ -868,56 +1389,159 @@ struct MCPsSection: View {
     }
 }
 
-struct SubsectionLabel: View {
+/// One-line empty note inside a subsection, where a full empty state would be too loud.
+struct InlineNote: View {
     let text: String
     var body: some View {
-        Text(text)
-            .font(.system(size: 10, weight: .medium))
+        Text(verbatim: text)
+            .font(.rowSubtitle)
             .foregroundStyle(.tertiary)
-            .padding(.horizontal, 12)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
+            .padding(.horizontal, Theme.gutter)
+            .padding(.vertical, 6)
     }
 }
 
 struct ClaudeAiRow: View {
     let integration: ClaudeAiIntegration
     let onToggle: () -> Void
+
+    private var symbol: String {
+        switch integration.name {
+        case "Gmail": return "envelope.fill"
+        case "Google Calendar": return "calendar"
+        case "Google Drive": return "folder.fill"
+        case "Slack": return "number"
+        case "Miro": return "square.on.square"
+        case "Figma": return "paintbrush.pointed.fill"
+        default: return "cloud.fill"
+        }
+    }
+
+    private var tint: Color {
+        switch integration.name {
+        case "Gmail": return .red
+        case "Google Calendar": return .blue
+        case "Google Drive": return .green
+        case "Slack": return .purple
+        case "Miro": return .yellow
+        case "Figma": return .pink
+        default: return .gray
+        }
+    }
+
+    private var statusColor: Color {
+        let status = integration.status.lowercased()
+        if integration.denied { return .secondary }
+        if status.contains("auth") { return .orange }
+        if status.contains("connected") && !status.contains("not") { return .green }
+        return .secondary
+    }
+
     var body: some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(integration.name).font(.system(size: 12, weight: .medium))
-                Text(integration.status)
-                    .font(.system(size: 10))
-                    .foregroundStyle(integration.status.lowercased().contains("connected") ? .green : .secondary)
-                    .lineLimit(1)
+            Tile(glyph: .symbol(symbol), tint: tint, dimmed: integration.denied)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(verbatim: integration.name)
+                    .font(.rowTitle)
+                    .foregroundStyle(integration.denied ? .secondary : .primary)
+                HStack(spacing: 2) {
+                    StatusDot(color: statusColor)
+                    Text(verbatim: integration.status)
+                        .font(.rowSubtitle)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.leading, -3)
             }
-            Spacer()
-            Toggle(
-                "",
-                isOn: Binding(get: { !integration.denied }, set: { _ in onToggle() })
-            )
-            .toggleStyle(.switch).labelsHidden().controlSize(.small)
+            Spacer(minLength: 8)
+            LoadoutSwitch(isOn: !integration.denied, onToggle: onToggle)
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
+        .rowChrome()
     }
 }
 
 struct MCPRow: View {
     let server: LocalMCPServer
     let onToggle: () -> Void
+
     var body: some View {
         HStack(spacing: 10) {
+            Tile(
+                glyph: .symbol(server.kind == "stdio" ? "terminal.fill" : "globe"),
+                tint: Tile.tint(for: server.name),
+                dimmed: !server.enabled
+            )
             VStack(alignment: .leading, spacing: 2) {
-                Text(server.name).font(.system(size: 12, weight: .medium))
-                Text("\(server.kind) · \(server.summary)")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
+                Text(verbatim: server.name)
+                    .font(.rowTitle)
+                    .foregroundStyle(server.enabled ? .primary : .secondary)
+                HStack(spacing: 6) {
+                    Text(verbatim: server.kind.uppercased())
+                        .font(.system(size: 9, weight: .semibold))
+                        .tracking(0.4)
+                        .foregroundStyle(.tertiary)
+                    Text(verbatim: server.summary)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
-            Spacer()
-            Toggle("", isOn: Binding(get: { server.enabled }, set: { _ in onToggle() }))
-                .toggleStyle(.switch).labelsHidden().controlSize(.small)
+            Spacer(minLength: 8)
+            LoadoutSwitch(isOn: server.enabled, onToggle: onToggle)
         }
-        .padding(.horizontal, 12).padding(.vertical, 6)
+        .rowChrome()
     }
 }
+
+// MARK: - Debug snapshots
+
+#if DEBUG
+/// `LOADOUT_SNAPSHOT=/some/dir .build/debug/Loadout` renders every tab in light
+/// and dark into PNGs, then exits. Lets you review the panel without clicking
+/// through the menu bar. Debug builds only.
+enum SnapshotRenderer {
+    @MainActor private static var windows: [NSWindow] = []
+
+    @MainActor static func runIfRequested() {
+        guard let dir = ProcessInfo.processInfo.environment["LOADOUT_SNAPSHOT"] else { return }
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let outDir = URL(fileURLWithPath: dir)
+        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        let store = AppStore()
+        var jobs: [(name: String, view: NSView)] = []
+        for (appearanceName, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            for tab in MenuView.Tab.allCases {
+                let root = MenuView(store: store, initialTab: tab, fixedHeight: 720)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                let host = NSHostingView(rootView: root)
+                let window = NSWindow(
+                    contentRect: NSRect(x: -4000, y: -4000, width: 440, height: 720),
+                    styleMask: [.borderless], backing: .buffered, defer: false
+                )
+                window.appearance = NSAppearance(named: appearance)
+                window.contentView = host
+                window.orderFrontRegardless()
+                windows.append(window)
+                jobs.append(("\(tab.rawValue.lowercased())-\(appearanceName)", host))
+            }
+        }
+
+        // Give the async loaders (claude mcp list, port scan, health probes) time to land.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+            for job in jobs {
+                job.view.layoutSubtreeIfNeeded()
+                guard let rep = job.view.bitmapImageRepForCachingDisplay(in: job.view.bounds) else { continue }
+                job.view.cacheDisplay(in: job.view.bounds, to: rep)
+                if let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: outDir.appendingPathComponent("\(job.name).png"))
+                }
+            }
+            exit(0)
+        }
+        app.run()
+    }
+}
+#endif

@@ -455,20 +455,37 @@ enum PortActions {
 
 @MainActor
 final class PortsStore: ObservableObject {
+    enum PendingAction { case stopping, restarting }
+
     @Published private(set) var ports: [PortEntry] = []
     @Published private(set) var health: [Int: PortHealth] = [:]
     @Published private(set) var isScanning = false
+    /// Ports with a kill/restart in flight. Cleared by the first scan that starts
+    /// after the action finishes, so rows never flash back to idle before they vanish.
+    @Published private(set) var pending: [Int: PendingAction] = [:]
 
     private var autoRefreshTask: Task<Void, Never>?
+    private var rescanQueued = false
+    private var settledPorts: Set<Int> = []
 
     func refresh() {
-        guard !isScanning else { return }
+        guard !isScanning else {
+            rescanQueued = true
+            return
+        }
         isScanning = true
+        let settling = settledPorts
+        settledPorts = []
         Task {
             let scanned = await Task.detached { PortScanner.scan() }.value
             self.ports = scanned
+            for port in settling { self.pending[port] = nil }
             self.isScanning = false
             self.probeHealth(for: scanned)
+            if self.rescanQueued {
+                self.rescanQueued = false
+                self.refresh()
+            }
         }
     }
 
@@ -510,28 +527,39 @@ final class PortsStore: ObservableObject {
         autoRefreshTask = nil
     }
 
+    private func settle(_ ports: [Int]) {
+        settledPorts.formUnion(ports)
+        refresh()
+    }
+
     func kill(_ entry: PortEntry) {
         let pid = entry.pid
+        let port = entry.port
+        pending[port] = .stopping
         Task.detached {
             PortActions.killGraceful(pid: pid)
-            await MainActor.run { self.refresh() }
+            await MainActor.run { self.settle([port]) }
         }
     }
 
     func killAll() {
         let pids = ports.map { $0.pid }
+        let affected = ports.map { $0.port }
+        for port in affected { pending[port] = .stopping }
         Task.detached {
             PortActions.killGraceful(pids: pids)
-            await MainActor.run { self.refresh() }
+            await MainActor.run { self.settle(affected) }
         }
     }
 
     func restart(_ entry: PortEntry) {
         let pid = entry.pid
+        let port = entry.port
+        pending[port] = .restarting
         Task.detached {
             PortActions.restart(pid: pid)
             try? await Task.sleep(nanoseconds: 800_000_000)
-            await MainActor.run { self.refresh() }
+            await MainActor.run { self.settle([port]) }
         }
     }
 }
@@ -546,6 +574,7 @@ struct TwoStepConfirmButton: View {
 
     @State private var awaitingConfirm = false
     @State private var resetTask: Task<Void, Never>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button {
@@ -562,12 +591,24 @@ struct TwoStepConfirmButton: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: awaitingConfirm ? "exclamationmark.triangle.fill" : systemImage)
-                    .font(.system(size: 9, weight: .semibold))
-                Text(awaitingConfirm ? confirmLabel : idleLabel)
-                    .font(.system(size: 10, weight: .medium))
+            HStack(spacing: 5) {
+                ZStack {
+                    if awaitingConfirm {
+                        Image(systemName: "exclamationmark.triangle.fill").transition(.iconSwap)
+                    } else {
+                        Image(systemName: systemImage).transition(.iconSwap)
+                    }
+                }
+                .font(.system(size: 10, weight: .semibold))
+                ZStack {
+                    if awaitingConfirm {
+                        Text(confirmLabel).transition(.textSwap)
+                    } else {
+                        Text(idleLabel).transition(.textSwap)
+                    }
+                }
             }
+            .animation(reduceMotion ? nil : Motion.reveal, value: awaitingConfirm)
         }
         .buttonStyle(CapsuleButtonStyle(emphasized: awaitingConfirm))
     }
@@ -578,52 +619,76 @@ struct CapsuleButtonStyle: ButtonStyle {
     var emphasized = false
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(emphasized ? AnyShapeStyle(.primary) : AnyShapeStyle(.primary.opacity(configuration.isPressed ? 0.16 : 0.08)))
-            .foregroundStyle(emphasized ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
-            .clipShape(Capsule())
+        CapsuleButtonBody(configuration: configuration, emphasized: emphasized)
+    }
+
+    private struct CapsuleButtonBody: View {
+        let configuration: Configuration
+        let emphasized: Bool
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .font(.control)
+                .padding(.horizontal, 10)
+                .frame(height: 24)
+                .background(
+                    Capsule().fill(emphasized ? AnyShapeStyle(.primary) : AnyShapeStyle(hovering ? Theme.hoverStrong.opacity(1.5) : Theme.hoverStrong))
+                )
+                .foregroundStyle(emphasized ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
+                .contentShape(Capsule())
+                .scaleEffect(configuration.isPressed ? 0.96 : 1)
+                .onHover { hovering = $0 }
+                .animation(Motion.press, value: configuration.isPressed)
+                .animation(Motion.hover, value: hovering)
+                .animation(Motion.hover, value: emphasized)
+        }
     }
 }
 
 struct PortsSection: View {
     @ObservedObject var store: PortsStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(store.ports.isEmpty ? "" : "\(store.ports.count) listening")
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
-                Spacer()
-                TwoStepConfirmButton(
-                    idleLabel: "Kill all",
-                    confirmLabel: "Confirm kill all?",
-                    systemImage: "xmark.octagon",
-                    action: { store.killAll() }
-                )
-                .opacity(store.ports.isEmpty ? 0 : 1)
-                .disabled(store.ports.isEmpty)
-            }
-            .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 4)
-
             if store.ports.isEmpty {
-                Text(store.isScanning ? "Scanning…" : "No dev servers listening.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 12).padding(.vertical, 4)
+                EmptyState(
+                    symbol: "dot.radiowaves.left.and.right",
+                    title: store.isScanning ? "Scanning ports…" : "No dev servers running",
+                    message: store.isScanning ? nil : "Start one and it shows up here within a few seconds."
+                )
             } else {
-                ForEach(store.ports) { entry in
-                    if entry.id != store.ports.first?.id {
-                        Divider().padding(.horizontal, 12)
-                    }
-                    PortRow(
-                        entry: entry,
-                        health: store.health[entry.port] ?? .unknown,
-                        onKill: { store.kill(entry) },
-                        onRestart: { store.restart(entry) }
+                ListToolbar(summary: "\(store.ports.count) listening") {
+                    TwoStepConfirmButton(
+                        idleLabel: "Kill all",
+                        confirmLabel: "Confirm kill all",
+                        systemImage: "xmark",
+                        action: { store.killAll() }
                     )
+                }
+
+                ForEach(store.ports) { entry in
+                    VStack(spacing: 0) {
+                        if entry.id != store.ports.first?.id {
+                            Rectangle()
+                                .fill(Theme.hairline)
+                                .frame(height: 1)
+                                .padding(.horizontal, Theme.gutter)
+                        }
+                        PortRow(
+                            entry: entry,
+                            health: store.health[entry.port] ?? .unknown,
+                            pending: store.pending[entry.port],
+                            onKill: { store.kill(entry) },
+                            onRestart: { store.restart(entry) }
+                        )
+                    }
+                    .transition(.opacity.combined(with: .offset(y: -4)))
                 }
             }
         }
+        .animation(reduceMotion ? nil : Motion.reveal, value: store.ports.map(\.port))
         .onAppear { store.startAutoRefresh() }
         .onDisappear { store.stopAutoRefresh() }
     }
@@ -632,68 +697,118 @@ struct PortsSection: View {
 struct PortRow: View {
     let entry: PortEntry
     let health: PortHealth
+    let pending: PortsStore.PendingAction?
     let onKill: () -> Void
     let onRestart: () -> Void
 
+    private var meta: String {
+        var parts = ["PID \(entry.pid)", entry.processName]
+        if let uptime = entry.uptime { parts.append("up \(uptime)") }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            HealthDot(health: health)
-                .padding(.top, 5)
+        HStack(alignment: .top, spacing: 8) {
+            HealthDot(health: pending == nil ? health : .checking)
+                .padding(.top, 2)
+                .padding(.leading, -2)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Button {
-                    if let url = entry.url { NSWorkspace.shared.open(url) }
-                } label: {
-                    Text(verbatim: "localhost:\(entry.port)")
-                        .font(.system(size: 12, weight: .medium))
-                        .lineLimit(1)
-                }
-                .buttonStyle(.plain)
-                .help(Text(verbatim: "Open http://localhost:\(entry.port)"))
-
-                HStack(spacing: 3) {
-                    Text(verbatim: entry.displayPath ?? entry.projectName ?? entry.processName)
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(Text(verbatim: entry.cwd ?? ""))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    PortLink(entry: entry)
                     if let framework = entry.framework {
-                        Text("· \(framework)").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(verbatim: framework)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .frame(height: 16)
+                            .background(Capsule().fill(Theme.track))
                     }
                 }
-                .lineLimit(1)
 
-                HStack(spacing: 4) {
-                    Text(verbatim: "PID \(entry.pid) · \(entry.processName)")
-                        .font(.system(size: 9)).foregroundStyle(.tertiary)
-                    if let uptime = entry.uptime {
-                        Text("· up \(uptime)").font(.system(size: 9)).foregroundStyle(.tertiary)
-                    }
-                }
-                .lineLimit(1)
+                Text(verbatim: entry.displayPath ?? entry.projectName ?? entry.processName)
+                    .font(.rowSubtitle)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(Text(verbatim: entry.cwd ?? ""))
+
+                Text(verbatim: meta)
+                    .font(.rowMeta)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 8)
 
-            HStack(spacing: 6) {
-                Button(action: onRestart) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .buttonStyle(.plain)
-                .disabled(!entry.canRestart)
-                .help(entry.canRestart
-                      ? "Restart — kill and relaunch the same command in the same directory"
-                      : "Can't restart — no known working directory for this process")
+            ZStack(alignment: .trailing) {
+                if let pending {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text(pending == .stopping ? "Stopping…" : "Restarting…")
+                            .font(.control)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(height: 26)
+                    .transition(.textSwap)
+                } else {
+                    HStack(spacing: 4) {
+                        IconButton(
+                            systemName: "arrow.clockwise",
+                            help: entry.canRestart
+                                ? "Restart — kill and relaunch the same command in the same directory"
+                                : "Can't restart — no known working directory for this process",
+                            action: onRestart
+                        )
+                        .disabled(!entry.canRestart)
 
-                Button(action: onKill) {
-                    Text("Kill").font(.system(size: 10, weight: .medium))
+                        Button(action: onKill) { Text("Kill") }
+                            .buttonStyle(CapsuleButtonStyle())
+                            .help("Kill — SIGTERM, then SIGKILL if it doesn't stop")
+                    }
+                    .transition(.textSwap)
                 }
-                .buttonStyle(CapsuleButtonStyle())
-                .help("Kill — SIGTERM, then SIGKILL if it doesn't stop")
             }
+            .animation(Motion.reveal, value: pending)
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .opacity(pending == nil ? 1 : 0.6)
+        .animation(Motion.hover, value: pending)
+        .rowChrome(verticalPadding: 10)
+    }
+}
+
+/// `localhost:PORT` with the port number carrying the weight. Plain text, not a blue link:
+/// hover underlines it and reveals an arrow.
+struct PortLink: View {
+    let entry: PortEntry
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            if let url = entry.url { NSWorkspace.shared.open(url) }
+        } label: {
+            HStack(spacing: 4) {
+                (Text(verbatim: "localhost:").foregroundStyle(.secondary)
+                    + Text(verbatim: "\(entry.port)").foregroundStyle(.primary).fontWeight(.semibold))
+                    .font(.system(size: 12.5, weight: .medium, design: .monospaced))
+                    .underline(hovering, color: .secondary.opacity(0.5))
+                    .lineLimit(1)
+                ZStack {
+                    if hovering {
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .transition(.iconSwap)
+                    }
+                }
+                .frame(width: 10)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Motion.hover, value: hovering)
+        .help(Text(verbatim: "Open http://localhost:\(entry.port)"))
     }
 }
 
@@ -701,9 +816,8 @@ struct HealthDot: View {
     let health: PortHealth
 
     var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 7, height: 7)
+        StatusDot(color: color)
+            .animation(Motion.hover, value: health)
             .help(label)
     }
 

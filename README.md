@@ -70,6 +70,12 @@ open Loadout.app                        # run from current dir
 cp -R Loadout.app /Applications/        # install
 ```
 
+To review the panel without clicking through the menu bar, render every tab in light and dark (debug builds only):
+
+```bash
+swift build && LOADOUT_SNAPSHOT=/tmp/loadout-shots .build/debug/Loadout
+```
+
 Requires macOS 14+ (SwiftUI `MenuBarExtra` with `.window` style + `foregroundStyle`).
 
 ## Known limitations
