@@ -201,7 +201,11 @@ export default function Home() {
 
             <div className="frame-main hero-main">
               <div className="hero-copy">
-                <h1 className="hero-title">Decide what Claude carries.</h1>
+                <h1 className="hero-title">
+                  Decide what
+                  <br />
+                  Claude carries.
+                </h1>
                 <p className="hero-lede">
                   <span className="dot" aria-hidden />A small macOS panel for
                   the plugins, skills and MCP servers Claude Code loads into

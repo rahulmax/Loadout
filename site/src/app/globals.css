@@ -433,9 +433,13 @@
       gap: 3rem;
     }
   }
+  /* Two lines at every width: "Claude carries." sets at ~6.1em, so 16cqi keeps
+     it inside the column, and the cap holds the old size where there's room. */
+  .hero-copy {
+    container-type: inline-size;
+  }
   .hero-title {
-    max-width: 9ch;
-    font-size: clamp(2.9rem, 6.4vw, 4.8rem);
+    font-size: clamp(2.4rem, 16cqi, 4.8rem);
     font-weight: 500;
     line-height: 0.98;
     letter-spacing: -0.055em;
