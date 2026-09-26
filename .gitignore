@@ -3,3 +3,5 @@
 *.xcodeproj/
 .DS_Store
 Loadout.app/
+.vercel
+.env*
