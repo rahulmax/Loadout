@@ -1,0 +1,458 @@
+/*
+  The recreated menu bar panel. Sizes are measured off the SwiftUI snapshot
+  renders (LOADOUT_SNAPSHOT) at 1x; colours are macOS window chrome, not site
+  tokens, because this is a picture of a Mac app. The only site colour inside
+  it is the accent, set to coral for this page.
+*/
+.mac-panel {
+  --mac-bg: #ececec;
+  --mac-text: #1f1f1f;
+  --mac-text-2: #787878;
+  --mac-text-3: #a6a6a6;
+  --mac-fill: rgb(0 0 0 / 0.055);
+  --mac-fill-2: rgb(0 0 0 / 0.08);
+  --mac-selected: #fff;
+  --mac-selected-shadow:
+    0 1px 2px rgb(0 0 0 / 0.12), 0 0 0 0.5px rgb(0 0 0 / 0.05);
+  --mac-sep: rgb(0 0 0 / 0.09);
+  --mac-knob: #fff;
+  --mac-accent: rgb(var(--coral-strong));
+  --mac-ok: #34c759;
+  --mac-down: #ff3b30;
+
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  container-type: inline-size;
+  border-radius: 12px;
+  background: var(--mac-bg);
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 0.22),
+    inset 0 0.5px 0 rgb(255 255 255 / 0.7),
+    0 24px 60px -18px rgb(var(--shadow) / 0.35),
+    0 8px 20px -10px rgb(var(--shadow) / 0.18);
+  color: var(--mac-text);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui,
+    sans-serif;
+  font-size: 13px;
+  line-height: 1.3;
+  letter-spacing: -0.005em;
+  text-align: left;
+  -webkit-font-smoothing: antialiased;
+}
+:root[data-theme='dark'] .mac-panel {
+  --mac-bg: #2a2a2a;
+  --mac-text: #ececec;
+  --mac-text-2: #9c9c9c;
+  --mac-text-3: #6f6f6f;
+  --mac-fill: rgb(255 255 255 / 0.06);
+  --mac-fill-2: rgb(255 255 255 / 0.1);
+  --mac-selected: rgb(255 255 255 / 0.16);
+  --mac-selected-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+  --mac-sep: rgb(255 255 255 / 0.08);
+  --mac-knob: #d8d8d8;
+  --mac-ok: #30d158;
+  --mac-down: #ff453a;
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 0.8),
+    inset 0 0 0 0.5px rgb(255 255 255 / 0.14),
+    0 24px 60px -18px rgb(0 0 0 / 0.7);
+}
+
+.mac-panel button {
+  font: inherit;
+  color: inherit;
+  cursor: default;
+}
+.mac-mono {
+  font-family: 'SF Mono', ui-monospace, Menlo, monospace;
+}
+
+.mac-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 50px;
+  padding: 0 14px 0 16px;
+}
+.mac-appicon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(rgb(255 140 120), rgb(var(--coral-strong)));
+  box-shadow:
+    inset 0 0 0 0.5px rgb(0 0 0 / 0.12),
+    0 1px 1px rgb(0 0 0 / 0.1);
+  color: #fff;
+}
+.mac-appicon svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.1;
+}
+.mac-title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.mac-icon-button {
+  margin-left: auto;
+  color: var(--mac-text-2);
+}
+
+.mac-tabs {
+  display: flex;
+  gap: 2px;
+  margin: 0 8px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--mac-fill);
+}
+.mac-tab {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--mac-text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition:
+    background-color 160ms var(--ease-out),
+    color 160ms var(--ease-out);
+}
+.mac-tab:hover {
+  color: var(--mac-text);
+}
+.mac-tab[aria-selected='true'] {
+  background: var(--mac-selected);
+  box-shadow: var(--mac-selected-shadow);
+  color: var(--mac-text);
+}
+/* A phone-width panel drops the tab icons so all four labels fit. */
+@container (max-width: 380px) {
+  .mac-tab svg {
+    display: none;
+  }
+}
+.mac-count {
+  color: var(--mac-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.mac-body {
+  flex: 1;
+  min-height: 0;
+  margin-top: 10px;
+  padding-bottom: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--mac-sep);
+  scrollbar-width: thin;
+}
+
+.mac-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  padding: 0 12px 0 16px;
+  color: var(--mac-text-2);
+  font-size: 12px;
+}
+.mac-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 11px;
+  border-radius: 99px;
+  background: var(--mac-fill-2);
+  color: var(--mac-text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.mac-section {
+  padding: 8px 16px 4px;
+  color: var(--mac-text-3);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.mac-section span {
+  margin-left: 3px;
+  opacity: 0.7;
+}
+
+.mac-list {
+  padding: 0 8px;
+}
+.mac-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 45px;
+  padding: 5px 8px;
+  border-radius: 7px;
+}
+.mac-row-skill {
+  min-height: 32px;
+  padding-block: 3px;
+  justify-content: space-between;
+}
+.mac-row-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+.mac-name {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 160ms var(--ease-out);
+}
+.mac-name[data-dim] {
+  color: var(--mac-text-2);
+  font-weight: 400;
+}
+.mac-sub {
+  overflow: hidden;
+  color: var(--mac-text-2);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mac-sub.mac-mono {
+  font-size: 10.5px;
+}
+.mac-transport {
+  margin-right: 6px;
+  color: var(--mac-text-3);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+.mac-letter,
+.mac-glyph {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--mac-fill-2);
+  color: var(--mac-text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.mac-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mac-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--mac-text-3);
+  box-shadow: 0 0 0 3px rgb(128 128 128 / 0.14);
+}
+.mac-dot[data-state='ok'] {
+  background: var(--mac-ok);
+  box-shadow: 0 0 0 3px rgb(52 199 89 / 0.16);
+}
+.mac-dot[data-state='down'] {
+  background: var(--mac-down);
+  box-shadow: 0 0 0 3px rgb(255 59 48 / 0.14);
+}
+
+/* A macOS mini switch. The accent is coral here; the app uses the system accent. */
+.mac-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 26px;
+  height: 15px;
+  padding: 0;
+  border: 0;
+  border-radius: 99px;
+  background: var(--mac-fill-2);
+  box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.08);
+  transition: background-color 180ms var(--ease-out);
+}
+.mac-switch::after {
+  content: '';
+  position: absolute;
+  top: 1.5px;
+  left: 1.5px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--mac-knob);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.25),
+    0 0 0 0.5px rgb(0 0 0 / 0.05);
+  transition: transform 200ms var(--ease-out);
+}
+.mac-switch[aria-checked='true'] {
+  background: var(--mac-accent);
+}
+.mac-switch[aria-checked='true']::after {
+  background: #fff;
+  transform: translateX(11px);
+}
+
+/* Four-state segmented control with a sliding thumb. Only On takes the accent. */
+.mac-seg {
+  --i: 0;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, 38px);
+  flex-shrink: 0;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--mac-fill);
+}
+.mac-seg-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 38px;
+  height: calc(100% - 4px);
+  border-radius: 5px;
+  background: var(--mac-selected);
+  box-shadow: var(--mac-selected-shadow);
+  transform: translateX(calc(var(--i) * 38px));
+  transition:
+    transform 220ms var(--ease-out),
+    background-color 160ms var(--ease-out);
+}
+.mac-seg[data-state='on'] .mac-seg-thumb {
+  background: var(--mac-accent);
+}
+.mac-seg button {
+  position: relative;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mac-text-2);
+  font-size: 11px;
+  font-weight: 500;
+  transition: color 160ms var(--ease-out);
+}
+.mac-seg button[aria-checked='true'] {
+  color: var(--mac-text);
+  font-weight: 600;
+}
+.mac-seg[data-state='on'] button[aria-checked='true'] {
+  color: #fff;
+}
+
+.mac-ports {
+  padding-inline: 16px 12px;
+}
+.mac-port {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--mac-sep);
+}
+.mac-port:last-child {
+  border-bottom: 0;
+}
+.mac-port .mac-dot {
+  margin-top: 5px;
+}
+.mac-port-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mac-port-host {
+  color: var(--mac-text-2);
+  font-size: 13px;
+}
+.mac-port-host b {
+  color: var(--mac-text);
+  font-weight: 600;
+}
+.mac-chip {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--mac-fill-2);
+  color: var(--mac-text-2);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+.mac-port-path {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--mac-text-2);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mac-port-meta {
+  color: var(--mac-text-3);
+  font-size: 11px;
+}
+.mac-port-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 3px;
+  color: var(--mac-text-2);
+}
+
+.mac-foot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 0 14px 0 16px;
+  border-top: 1px solid var(--mac-sep);
+  color: var(--mac-text-2);
+  font-size: 11px;
+}
+.mac-foot > svg {
+  flex-shrink: 0;
+  color: var(--mac-text-3);
+}
+.mac-foot > .mac-foot-ok {
+  color: var(--mac-ok);
+}
+.mac-foot code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--mac-fill-2);
+  color: var(--mac-text);
+  font-family: 'SF Mono', ui-monospace, Menlo, monospace;
+  font-size: 10.5px;
+}
+.mac-quit {
+  margin-left: auto;
+  color: var(--mac-text-2);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mac-quit kbd {
+  color: var(--mac-text-3);
+  font-family: inherit;
+}
