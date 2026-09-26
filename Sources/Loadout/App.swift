@@ -69,12 +69,27 @@ enum SkillOverride: String, CaseIterable, Identifiable {
     }
 }
 
+/// Why a skill's state can't be set from user settings. Mirrors Claude Code's `locked_by`.
+enum SkillLock: Hashable {
+    /// Plugin skills ignore `skillOverrides`; only the plugin switch drops them.
+    case plugin
+    /// The skill sets `disable-model-invocation`, so it is slash-only unless turned off.
+    case author
+}
+
 struct DiscoveredSkill: Identifiable, Hashable {
     var id: String { key }
     let key: String              // "compose" or "impeccable:polish"
     let displayName: String
     let source: String           // "user" or plugin name
     let pluginEnabled: Bool       // if false, the skill is dormant regardless of override
+    let lock: SkillLock?
+}
+
+/// A project whose own settings give a skill a different state than the global one.
+struct ProjectOverride: Hashable {
+    let project: String          // folder name
+    let state: SkillOverride
 }
 
 struct LocalMCPServer: Identifiable, Hashable {
@@ -83,6 +98,7 @@ struct LocalMCPServer: Identifiable, Hashable {
     let kind: String              // stdio, http, sse
     let summary: String           // command or url, truncated
     var enabled: Bool
+    var offInProjects: [String] = []
 }
 
 struct ClaudeAiIntegration: Identifiable, Hashable {
@@ -91,6 +107,7 @@ struct ClaudeAiIntegration: Identifiable, Hashable {
     let url: String
     let status: String            // "Connected", "Needs authentication", etc.
     var denied: Bool
+    var offInProjects: [String] = []
 }
 
 // MARK: - Store
@@ -100,7 +117,13 @@ final class AppStore: ObservableObject {
     @Published private(set) var plugins: [InstalledPlugin] = []
     @Published private(set) var skills: [DiscoveredSkill] = []
     @Published private(set) var skillOverrides: [String: SkillOverride] = [:]
+    /// `plugin:skill` keys in `skillOverrides`. Claude Code never reads them.
+    @Published private(set) var deadOverrideKeys: [String] = []
+    /// User skill key → projects whose own settings give it a different state.
+    @Published private(set) var skillProjectOverrides: [String: [ProjectOverride]] = [:]
     @Published private(set) var mcpServers: [LocalMCPServer] = []
+    /// Server name → folders where `/mcp` turned it off for that project only.
+    @Published private(set) var mcpProjectDisables: [String: [String]] = [:]
     @Published private(set) var claudeAiIntegrations: [ClaudeAiIntegration] = []
     @Published private(set) var loadingClaudeAi: Bool = false
     @Published private(set) var lastError: String?
@@ -108,13 +131,42 @@ final class AppStore: ObservableObject {
     @Published private(set) var justCopied = false
     private var copiedResetTask: Task<Void, Never>?
 
-    private let home = FileManager.default.homeDirectoryForCurrentUser
+    private let home: URL
+    /// Set for snapshot runs: every write throws, so rendering can never touch real config.
+    private let readOnly: Bool
     private var installedUrl: URL { home.appendingPathComponent(".claude/plugins/installed_plugins.json") }
     private var settingsUrl: URL { home.appendingPathComponent(".claude/settings.json") }
     private var claudeJsonUrl: URL { home.appendingPathComponent(".claude.json") }
     private var userSkillsDir: URL { home.appendingPathComponent(".claude/skills") }
 
-    init() { reload() }
+    /// Projects whose settings are read per reload, to flag overrides. Keeps a huge
+    /// `~/.claude.json` history from slowing the panel down.
+    private static let projectScanLimit = 200
+
+    init(home: URL = AppStore.defaultHome, readOnly: Bool = AppStore.isSnapshotRun) {
+        self.home = home
+        self.readOnly = readOnly
+        migrateParkedServers()
+        reload()
+    }
+
+    /// Debug builds can point the store at a fixture folder with `LOADOUT_HOME`.
+    nonisolated static var defaultHome: URL {
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["LOADOUT_HOME"] {
+            return URL(fileURLWithPath: path)
+        }
+        #endif
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    nonisolated static var isSnapshotRun: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["LOADOUT_SNAPSHOT"] != nil
+        #else
+        return false
+        #endif
+    }
 
     func reload() {
         do {
@@ -172,6 +224,7 @@ final class AppStore: ObservableObject {
         let settings = try readJSON(settingsUrl)
         let overrides = settings["skillOverrides"] as? [String: String] ?? [:]
         skillOverrides = overrides.compactMapValues { SkillOverride(rawValue: $0) }
+        deadOverrideKeys = overrides.keys.filter { $0.contains(":") }.sorted()
 
         var found: [DiscoveredSkill] = []
 
@@ -184,12 +237,15 @@ final class AppStore: ObservableObject {
                 guard isDir,
                       FileManager.default.fileExists(atPath: url.appendingPathComponent("SKILL.md").path)
                 else { continue }
+                // Claude Code keys user skills by folder name, not the frontmatter `name`.
                 let name = url.lastPathComponent
+                let skillFile = url.appendingPathComponent("SKILL.md")
                 found.append(DiscoveredSkill(
                     key: name,
                     displayName: name,
                     source: "user",
-                    pluginEnabled: true
+                    pluginEnabled: true,
+                    lock: disablesModelInvocation(skillFile) ? .author : nil
                 ))
             }
         }
@@ -211,7 +267,8 @@ final class AppStore: ObservableObject {
                     key: key,
                     displayName: skillName,
                     source: plugin.name,
-                    pluginEnabled: plugin.enabled
+                    pluginEnabled: plugin.enabled,
+                    lock: .plugin
                 ))
             }
         }
@@ -220,9 +277,78 @@ final class AppStore: ObservableObject {
             ($0.source.lowercased(), $0.displayName.lowercased())
                 < ($1.source.lowercased(), $1.displayName.lowercased())
         }
+        skillProjectOverrides = loadSkillProjectOverrides(userSkills: found.filter { $0.lock != .plugin })
+    }
+
+    /// True when SKILL.md frontmatter sets `disable-model-invocation: true`.
+    private func disablesModelInvocation(_ file: URL) -> Bool {
+        guard let text = try? String(contentsOf: file, encoding: .utf8),
+              text.hasPrefix("---") else { return false }
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == "---" { break }
+            let parts = trimmed.split(separator: ":", maxSplits: 1)
+            if parts.count == 2,
+               parts[0].trimmingCharacters(in: .whitespaces) == "disable-model-invocation" {
+                return parts[1].trimmingCharacters(in: .whitespaces).lowercased() == "true"
+            }
+        }
+        return false
+    }
+
+    /// Project folders Claude Code has opened, from `~/.claude.json`, by path.
+    private func knownProjects(_ claudeJson: [String: Any]) -> [(path: String, config: [String: Any])] {
+        let projects = claudeJson["projects"] as? [String: [String: Any]] ?? [:]
+        return projects
+            .sorted { $0.key < $1.key }
+            .prefix(Self.projectScanLimit)
+            .map { (path: $0.key, config: $0.value) }
+    }
+
+    /// For each user skill, the projects whose settings.json or settings.local.json give it
+    /// a state other than the global one. Claude Code applies local > project > user.
+    private func loadSkillProjectOverrides(userSkills: [DiscoveredSkill]) -> [String: [ProjectOverride]] {
+        guard let claudeJson = try? readJSON(claudeJsonUrl) else { return [:] }
+        var result: [String: [ProjectOverride]] = [:]
+        for project in knownProjects(claudeJson) {
+            let dir = URL(fileURLWithPath: project.path).appendingPathComponent(".claude")
+            // In the home folder, .claude/settings.json is the user file itself.
+            let isHome = URL(fileURLWithPath: project.path).standardizedFileURL == home.standardizedFileURL
+            let shared = isHome ? [:] : projectSkillOverrides(dir.appendingPathComponent("settings.json"))
+            let local = projectSkillOverrides(dir.appendingPathComponent("settings.local.json"))
+            guard !shared.isEmpty || !local.isEmpty else { continue }
+            let folder = URL(fileURLWithPath: project.path).lastPathComponent
+            for skill in userSkills {
+                guard let state = local[skill.key] ?? shared[skill.key],
+                      state != (skillOverrides[skill.key] ?? .on) else { continue }
+                result[skill.key, default: []].append(ProjectOverride(project: folder, state: state))
+            }
+        }
+        return result
+    }
+
+    private func projectSkillOverrides(_ url: URL) -> [String: SkillOverride] {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let json = try? readJSON(url),
+              let map = json["skillOverrides"] as? [String: String] else { return [:] }
+        return map.compactMapValues { SkillOverride(rawValue: $0) }
+    }
+
+    /// The state Claude Code resolves from user settings: author-locked skills are slash-only
+    /// unless turned off. Plugin skills are always on while their plugin is.
+    func effectiveState(_ skill: DiscoveredSkill) -> SkillOverride {
+        let stored = skillOverrides[skill.key] ?? .on
+        switch skill.lock {
+        case .plugin: return .on
+        case .author: return stored == .off ? .off : .userInvocableOnly
+        case nil: return stored
+        }
     }
 
     func setSkillOverride(_ skill: DiscoveredSkill, to value: SkillOverride) {
+        guard skill.lock != .plugin else { return }
+        // An author-locked skill is already slash-only; the only real choice is Off.
+        let value: SkillOverride = skill.lock == .author && value != .off ? .on : value
         do {
             try writeSettings { json in
                 var map = json["skillOverrides"] as? [String: String] ?? [:]
@@ -244,13 +370,15 @@ final class AppStore: ObservableObject {
         }
     }
 
-    /// Sets every discovered skill to `off` in a single settings write.
+    /// Sets every user skill to `off` in a single settings write. Plugin skills are
+    /// skipped: Claude Code ignores overrides for them.
     func turnOffAllSkills() {
-        guard !skills.isEmpty else { return }
+        let targets = skills.filter { $0.lock != .plugin }
+        guard !targets.isEmpty else { return }
         do {
             try writeSettings { json in
                 var map = json["skillOverrides"] as? [String: String] ?? [:]
-                for skill in self.skills {
+                for skill in targets {
                     map[skill.key] = SkillOverride.off.rawValue
                 }
                 json["skillOverrides"] = map
@@ -262,23 +390,99 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Removes the `plugin:skill` keys earlier versions wrote. They never had an effect.
+    func removeDeadOverrides() {
+        let dead = Set(deadOverrideKeys)
+        guard !dead.isEmpty else { return }
+        do {
+            try writeSettings { json in
+                var map = json["skillOverrides"] as? [String: String] ?? [:]
+                map = map.filter { !dead.contains($0.key) }
+                if map.isEmpty {
+                    json.removeValue(forKey: "skillOverrides")
+                } else {
+                    json["skillOverrides"] = map
+                }
+            }
+            reload()
+        } catch {
+            lastError = "Could not clean up overrides: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: Local MCP servers
 
+    /// A local server is off when `deniedMcpServers` names it. Its config stays in
+    /// `mcpServers`, so Loadout never has to write `~/.claude.json` to toggle it.
     private func loadMCPs() throws {
         let claudeJson = try readJSON(claudeJsonUrl)
         let active = claudeJson["mcpServers"] as? [String: [String: Any]] ?? [:]
-        let disabled = claudeJson["_disabledMcpServers"] as? [String: [String: Any]] ?? [:]
+        // Parked by Loadout before 1.1; only still here in a read-only run.
+        let parked = claudeJson["_disabledMcpServers"] as? [String: [String: Any]] ?? [:]
+        let deniedNames = readDenyNames()
 
-        var seen: Set<String> = []
         var found: [LocalMCPServer] = []
         for (name, cfg) in active {
-            seen.insert(name)
-            found.append(makeServer(name: name, cfg: cfg, enabled: true))
+            found.append(makeServer(name: name, cfg: cfg, enabled: !deniedNames.contains(name)))
         }
-        for (name, cfg) in disabled where !seen.contains(name) {
+        for (name, cfg) in parked where active[name] == nil {
             found.append(makeServer(name: name, cfg: cfg, enabled: false))
         }
-        mcpServers = found.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        mcpProjectDisables = loadMcpProjectDisables(claudeJson)
+        mcpServers = found
+            .map { server in
+                var server = server
+                server.offInProjects = mcpProjectDisables[server.name] ?? []
+                return server
+            }
+            .sorted { $0.name.lowercased() < $1.name.lowercased() }
+    }
+
+    /// Server name → folders where `/mcp` turned it off (`projects[path].disabledMcpServers`).
+    private func loadMcpProjectDisables(_ claudeJson: [String: Any]) -> [String: [String]] {
+        var result: [String: [String]] = [:]
+        for project in knownProjects(claudeJson) {
+            let folder = URL(fileURLWithPath: project.path).lastPathComponent
+            for name in project.config["disabledMcpServers"] as? [String] ?? [] {
+                result[name, default: []].append(folder)
+            }
+        }
+        return result
+    }
+
+    /// One-time move off the old `_disabledMcpServers` parking lot: deny each parked
+    /// server by name first, then put its config back. If the second write fails the
+    /// server is still blocked. Backs up `~/.claude.json` once before touching it.
+    private func migrateParkedServers() {
+        guard !readOnly,
+              let claudeJson = try? readJSON(claudeJsonUrl),
+              let parked = claudeJson["_disabledMcpServers"] as? [String: Any]
+        else { return }
+        do {
+            let backup = home.appendingPathComponent(".claude.json.loadout-backup")
+            if !FileManager.default.fileExists(atPath: backup.path) {
+                try FileManager.default.copyItem(at: claudeJsonUrl, to: backup)
+            }
+            if !parked.isEmpty {
+                try updateDenyList { deny in
+                    for name in parked.keys.sorted()
+                    where !deny.contains(where: { ($0["serverName"] as? String) == name }) {
+                        deny.append(["serverName": name])
+                    }
+                }
+            }
+            try writeClaudeJson { json in
+                var active = json["mcpServers"] as? [String: Any] ?? [:]
+                let stillParked = json["_disabledMcpServers"] as? [String: Any] ?? [:]
+                for (name, cfg) in stillParked where active[name] == nil {
+                    active[name] = cfg
+                }
+                json["mcpServers"] = active
+                json.removeValue(forKey: "_disabledMcpServers")
+            }
+        } catch {
+            lastError = "Could not migrate parked MCP servers: \(error.localizedDescription)"
+        }
     }
 
     private func makeServer(name: String, cfg: [String: Any], enabled: Bool) -> LocalMCPServer {
@@ -327,7 +531,8 @@ final class AppStore: ObservableObject {
                 status = "Not connected"
             }
             return ClaudeAiIntegration(
-                name: item.name, url: item.url, status: status, denied: denied
+                name: item.name, url: item.url, status: status, denied: denied,
+                offInProjects: mcpProjectDisables["claude.ai \(item.name)"] ?? []
             )
         }
         .sorted { $0.name.lowercased() < $1.name.lowercased() }
@@ -338,35 +543,48 @@ final class AppStore: ObservableObject {
         let denyUrls = readDenyUrls()
         claudeAiIntegrations = claudeAiIntegrations.map { entry in
             var updated = entry
-            updated = ClaudeAiIntegration(
-                name: entry.name,
-                url: entry.url,
-                status: entry.status,
-                denied: denyUrls.contains(entry.url)
-            )
+            updated.denied = denyUrls.contains(entry.url)
+            updated.offInProjects = mcpProjectDisables["claude.ai \(entry.name)"] ?? []
             return updated
         }
     }
 
+    // MARK: deniedMcpServers
+
+    /// Entries take exactly one of `serverName`, `serverUrl` or `serverCommand`, matched
+    /// verbatim. Loadout writes the first two and leaves any other entry alone.
+    private func readDenyEntries() -> [[String: Any]] {
+        guard let json = try? readJSON(settingsUrl) else { return [] }
+        return json["deniedMcpServers"] as? [[String: Any]] ?? []
+    }
+
     private func readDenyUrls() -> Set<String> {
-        guard let json = try? readJSON(settingsUrl),
-              let deny = json["deniedMcpServers"] as? [[String: Any]] else { return [] }
-        return Set(deny.compactMap { $0["serverUrl"] as? String })
+        Set(readDenyEntries().compactMap { $0["serverUrl"] as? String })
+    }
+
+    private func readDenyNames() -> Set<String> {
+        Set(readDenyEntries().compactMap { $0["serverName"] as? String })
+    }
+
+    private func updateDenyList(_ mutate: (inout [[String: Any]]) -> Void) throws {
+        try writeSettings { json in
+            var deny = json["deniedMcpServers"] as? [[String: Any]] ?? []
+            mutate(&deny)
+            if deny.isEmpty {
+                json.removeValue(forKey: "deniedMcpServers")
+            } else {
+                json["deniedMcpServers"] = deny
+            }
+        }
     }
 
     func toggleClaudeAiIntegration(_ integration: ClaudeAiIntegration) {
         do {
-            try writeSettings { json in
-                var deny = json["deniedMcpServers"] as? [[String: Any]] ?? []
+            try updateDenyList { deny in
                 if integration.denied {
                     deny.removeAll { ($0["serverUrl"] as? String) == integration.url }
                 } else {
                     deny.append(["serverUrl": integration.url])
-                }
-                if deny.isEmpty {
-                    json.removeValue(forKey: "deniedMcpServers")
-                } else {
-                    json["deniedMcpServers"] = deny
                 }
             }
             markToggled()
@@ -378,23 +596,11 @@ final class AppStore: ObservableObject {
 
     func toggleMCPServer(_ server: LocalMCPServer) {
         do {
-            try writeClaudeJson { json in
-                var active = json["mcpServers"] as? [String: Any] ?? [:]
-                var disabled = json["_disabledMcpServers"] as? [String: Any] ?? [:]
+            try updateDenyList { deny in
                 if server.enabled {
-                    if let cfg = active.removeValue(forKey: server.name) {
-                        disabled[server.name] = cfg
-                    }
+                    deny.append(["serverName": server.name])
                 } else {
-                    if let cfg = disabled.removeValue(forKey: server.name) {
-                        active[server.name] = cfg
-                    }
-                }
-                json["mcpServers"] = active
-                if disabled.isEmpty {
-                    json.removeValue(forKey: "_disabledMcpServers")
-                } else {
-                    json["_disabledMcpServers"] = disabled
+                    deny.removeAll { ($0["serverName"] as? String) == server.name }
                 }
             }
             markToggled()
@@ -430,6 +636,10 @@ final class AppStore: ObservableObject {
     }
 
     private func mutateJSON(at url: URL, mutate: (inout [String: Any]) -> Void) throws {
+        guard !readOnly else {
+            throw NSError(domain: "Loadout", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "Read-only run: not writing \(url.lastPathComponent)"])
+        }
         let data = try Data(contentsOf: url)
         guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw NSError(domain: "Loadout", code: 1,
@@ -1126,28 +1336,30 @@ struct SkillsSection: View {
     @ObservedObject var store: AppStore
 
     private var userSkills: [DiscoveredSkill] {
-        store.skills.filter { $0.source == "user" }
+        store.skills.filter { $0.lock != .plugin }
     }
 
     private var pluginGroups: [(name: String, skills: [DiscoveredSkill])] {
-        let pluginSkills = store.skills.filter { $0.source != "user" }
+        let pluginSkills = store.skills.filter { $0.lock == .plugin }
         let grouped = Dictionary(grouping: pluginSkills) { $0.source }
         return grouped.keys
             .sorted { $0.lowercased() < $1.lowercased() }
             .map { (name: $0, skills: grouped[$0] ?? []) }
     }
 
-    /// "12 on · 3 trimmed · 80 off", skipping empty buckets.
+    /// "12 on · 3 trimmed · 8 off · 20 from plugins", skipping empty buckets.
+    /// Plugin skills follow their plugin, so they get their own bucket.
     private var summary: String {
         var on = 0, trimmed = 0, off = 0
-        for skill in store.skills {
-            switch store.skillOverrides[skill.key] ?? .on {
+        for skill in userSkills {
+            switch store.effectiveState(skill) {
             case .on: on += 1
             case .nameOnly, .userInvocableOnly: trimmed += 1
             case .off: off += 1
             }
         }
-        let parts = [(on, "on"), (trimmed, "trimmed"), (off, "off")]
+        let fromPlugins = store.skills.count - userSkills.count
+        let parts = [(on, "on"), (trimmed, "trimmed"), (off, "off"), (fromPlugins, "from plugins")]
             .filter { $0.0 > 0 }
             .map { "\($0.0) \($0.1)" }
         return parts.joined(separator: " · ")
@@ -1162,12 +1374,14 @@ struct SkillsSection: View {
             )
         } else {
             ListToolbar(summary: summary) {
-                TwoStepConfirmButton(
-                    idleLabel: "Turn all off",
-                    confirmLabel: "Confirm",
-                    systemImage: "power",
-                    action: { store.turnOffAllSkills() }
-                )
+                if !userSkills.isEmpty {
+                    TwoStepConfirmButton(
+                        idleLabel: "Turn all off",
+                        confirmLabel: "Confirm",
+                        systemImage: "power",
+                        action: { store.turnOffAllSkills() }
+                    )
+                }
             }
 
             if !userSkills.isEmpty {
@@ -1175,7 +1389,8 @@ struct SkillsSection: View {
                 ForEach(userSkills) { skill in
                     SkillRow(
                         skill: skill,
-                        current: store.skillOverrides[skill.key] ?? .on,
+                        current: store.effectiveState(skill),
+                        projects: store.skillProjectOverrides[skill.key] ?? [],
                         onPick: { store.setSkillOverride(skill, to: $0) }
                     )
                 }
@@ -1184,32 +1399,55 @@ struct SkillsSection: View {
             if !pluginGroups.isEmpty {
                 SectionLabel(title: "Plugins", count: pluginGroups.count)
                 ForEach(pluginGroups, id: \.name) { group in
-                    PluginSkillGroup(name: group.name, skills: group.skills, store: store)
+                    PluginSkillGroup(name: group.name, skills: group.skills)
+                }
+                InlineNote(text: "Plugin skills ignore per-skill settings. Turn the plugin off in Plugins to drop them.")
+            }
+
+            if !store.deadOverrideKeys.isEmpty {
+                DeadOverridesRow(count: store.deadOverrideKeys.count) {
+                    store.removeDeadOverrides()
                 }
             }
         }
     }
 }
 
+/// Leftover `plugin:skill` overrides from earlier versions. Claude Code never reads them.
+struct DeadOverridesRow: View {
+    let count: Int
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(verbatim: "\(count) plugin skill \(count == 1 ? "override has" : "overrides have") no effect")
+                .font(.rowSubtitle)
+                .foregroundStyle(.secondary)
+                .help("Claude Code ignores skillOverrides for plugin skills. These keys in settings.json do nothing.")
+            Spacer(minLength: 8)
+            TwoStepConfirmButton(
+                idleLabel: "Remove",
+                confirmLabel: "Confirm",
+                systemImage: "trash",
+                action: onRemove
+            )
+        }
+        .padding(.horizontal, Theme.gutter)
+        .padding(.vertical, 8)
+    }
+}
+
 struct PluginSkillGroup: View {
     let name: String
     let skills: [DiscoveredSkill]
-    @ObservedObject var store: AppStore
     @State private var expanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var pluginEnabled: Bool { skills.first?.pluginEnabled ?? true }
 
-    private var adjustedCount: Int {
-        skills.filter { (store.skillOverrides[$0.key] ?? .on) != .on }.count
-    }
-
     private var detail: String {
         let noun = skills.count == 1 ? "skill" : "skills"
-        var parts = ["\(skills.count) \(noun)"]
-        if adjustedCount > 0 { parts.append("\(adjustedCount) adjusted") }
-        if !pluginEnabled { parts.insert("Plugin off", at: 0) }
-        return parts.joined(separator: " · ")
+        return (pluginEnabled ? "" : "Plugin off · ") + "\(skills.count) \(noun)"
     }
 
     var body: some View {
@@ -1243,12 +1481,7 @@ struct PluginSkillGroup: View {
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(skills) { skill in
-                        SkillRow(
-                            skill: skill,
-                            current: store.skillOverrides[skill.key] ?? .on,
-                            indent: 36,
-                            onPick: { store.setSkillOverride(skill, to: $0) }
-                        )
+                        PluginSkillRow(skill: skill)
                     }
                 }
                 .padding(.bottom, 4)
@@ -1258,11 +1491,38 @@ struct PluginSkillGroup: View {
     }
 }
 
+/// A plugin skill: listed for reference, with no controls. It is on exactly when its plugin is.
+struct PluginSkillRow: View {
+    let skill: DiscoveredSkill
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(verbatim: skill.displayName)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(skill.pluginEnabled ? .primary : .secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(Text(verbatim: skill.key))
+            Spacer(minLength: 8)
+            Text(skill.pluginEnabled ? "On with plugin" : "Off with plugin")
+                .font(.rowSubtitle)
+                .foregroundStyle(.tertiary)
+                .help("Plugin skills ignore skillOverrides. Use the plugin's switch in Plugins.")
+        }
+        .padding(.leading, 36)
+        .rowChrome(verticalPadding: 5)
+    }
+}
+
 struct SkillRow: View {
     let skill: DiscoveredSkill
     let current: SkillOverride
-    var indent: CGFloat = 0
+    var projects: [ProjectOverride] = []
     let onPick: (SkillOverride) -> Void
+
+    private var allowed: Set<SkillOverride> {
+        skill.lock == .author ? [.userInvocableOnly, .off] : Set(SkillOverride.allCases)
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1273,20 +1533,45 @@ struct SkillRow: View {
                 .truncationMode(.middle)
                 .help(Text(verbatim: skill.key))
             Spacer(minLength: 8)
-            SkillStateSegments(current: current, enabled: skill.pluginEnabled, onPick: onPick)
+            if !projects.isEmpty {
+                ProjectMarker(label: "\(projects.count) \(projects.count == 1 ? "project" : "projects")", detail: projectsDetail)
+            }
+            SkillStateSegments(current: current, allowed: allowed, onPick: onPick)
         }
-        .padding(.leading, indent)
         .animation(Motion.hover, value: current)
         .rowChrome(verticalPadding: 4)
-        .opacity(skill.pluginEnabled ? 1 : 0.5)
+    }
+
+    private var projectsDetail: String {
+        let lines = projects.map { "\($0.project): \($0.state.label)" }
+        return "These projects set their own state, which wins over this one:\n" + lines.joined(separator: "\n")
+    }
+}
+
+/// Quiet trailing note that a project's own settings differ, with the list in a tooltip.
+struct ProjectMarker: View {
+    let label: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "folder")
+                .font(.system(size: 9, weight: .semibold))
+            Text(verbatim: label)
+                .font(.rowMeta)
+        }
+        .foregroundStyle(.tertiary)
+        .lineLimit(1)
+        .fixedSize()
+        .help(detail)
     }
 }
 
 /// Inline four-state segmented control (On / Name / Slash / Off) with a sliding thumb,
-/// so every state is visible and one click away.
+/// so every state is visible and one click away. States outside `allowed` are dimmed.
 struct SkillStateSegments: View {
     let current: SkillOverride
-    let enabled: Bool
+    var allowed: Set<SkillOverride> = Set(SkillOverride.allCases)
     let onPick: (SkillOverride) -> Void
 
     @Namespace private var thumb
@@ -1302,11 +1587,14 @@ struct SkillStateSegments: View {
     }
 
     private func tooltip(_ state: SkillOverride) -> String {
+        if !allowed.contains(state) {
+            return "This skill turns off model use itself, so it can only be Slash or Off"
+        }
         switch state {
-        case .on: return "On — full skill body available to the model"
-        case .nameOnly: return "Name only — ~150 chars (name + description), keeps it discoverable"
-        case .userInvocableOnly: return "Slash only — invocable as /skill-name, hidden from model discovery"
-        case .off: return "Off — fully disabled"
+        case .on: return "On — listed with its description. The body loads only when used"
+        case .nameOnly: return "Name — listed by name only, without the description"
+        case .userInvocableOnly: return "Slash — hidden from the model. You can still type /name"
+        case .off: return "Off — hidden from the model and from /"
         }
     }
 
@@ -1314,12 +1602,13 @@ struct SkillStateSegments: View {
         HStack(spacing: 0) {
             ForEach(SkillOverride.allCases) { state in
                 let selected = state == current
+                let enabled = allowed.contains(state)
                 Button {
                     onPick(state)
                 } label: {
                     Text(shortLabel(state))
                         .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? (state == .on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary)) : AnyShapeStyle(.secondary))
+                        .foregroundStyle(selected ? (state == .on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary)) : AnyShapeStyle(enabled ? .secondary : .quaternary))
                         .lineLimit(1)
                         .frame(width: 40, height: 20)
                         .background {
@@ -1338,14 +1627,22 @@ struct SkillStateSegments: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(!enabled)
                 .help(tooltip(state))
             }
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Theme.track))
         .animation(reduceMotion ? nil : Motion.slide, value: current)
-        .disabled(!enabled)
     }
+}
+
+/// "Off in 3" for a server that `/mcp` disabled in some projects while it's allowed here.
+func offLabel(_ projects: [String]) -> String { "Off in \(projects.count)" }
+
+func offDetail(_ projects: [String]) -> String {
+    "Turned off with /mcp in \(projects.count == 1 ? "this project" : "these projects"):\n"
+        + projects.joined(separator: "\n")
 }
 
 struct MCPsSection: View {
@@ -1455,6 +1752,9 @@ struct ClaudeAiRow: View {
                 .padding(.leading, -3)
             }
             Spacer(minLength: 8)
+            if !integration.denied && !integration.offInProjects.isEmpty {
+                ProjectMarker(label: offLabel(integration.offInProjects), detail: offDetail(integration.offInProjects))
+            }
             LoadoutSwitch(isOn: !integration.denied, onToggle: onToggle)
         }
         .rowChrome()
@@ -1489,6 +1789,9 @@ struct MCPRow: View {
                 }
             }
             Spacer(minLength: 8)
+            if server.enabled && !server.offInProjects.isEmpty {
+                ProjectMarker(label: offLabel(server.offInProjects), detail: offDetail(server.offInProjects))
+            }
             LoadoutSwitch(isOn: server.enabled, onToggle: onToggle)
         }
         .rowChrome()
@@ -1511,7 +1814,7 @@ enum SnapshotRenderer {
         let outDir = URL(fileURLWithPath: dir)
         try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
-        let store = AppStore()
+        let store = AppStore(readOnly: true)
         var jobs: [(name: String, view: NSView)] = []
         for (appearanceName, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             for tab in MenuView.Tab.allCases {
