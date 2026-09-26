@@ -225,6 +225,24 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Sets every discovered skill to `off` in a single settings write.
+    func turnOffAllSkills() {
+        guard !skills.isEmpty else { return }
+        do {
+            try writeSettings { json in
+                var map = json["skillOverrides"] as? [String: String] ?? [:]
+                for skill in self.skills {
+                    map[skill.key] = SkillOverride.off.rawValue
+                }
+                json["skillOverrides"] = map
+            }
+            markToggled()
+            reload()
+        } catch {
+            lastError = "Could not turn off skills: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: Local MCP servers
 
     private func loadMCPs() throws {
@@ -465,9 +483,11 @@ func parseMcpList(_ text: String) -> [ParsedMcpEntry] {
 
 struct MenuView: View {
     @ObservedObject var store: AppStore
-    @State private var tab: Tab = .plugins
+    @StateObject private var portsStore = PortsStore()
+    @State private var tab: Tab = .ports
 
     enum Tab: String, CaseIterable, Identifiable {
+        case ports = "Ports"
         case plugins = "Plugins"
         case skills = "Skills"
         case mcps = "MCP"
@@ -476,6 +496,7 @@ struct MenuView: View {
 
     private func count(for tab: Tab) -> Int {
         switch tab {
+        case .ports: return portsStore.ports.count
         case .plugins: return store.plugins.count
         case .skills: return store.skills.count
         case .mcps: return store.mcpServers.count + store.claudeAiIntegrations.count
@@ -505,6 +526,7 @@ struct MenuView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     switch tab {
+                    case .ports: PortsSection(store: portsStore)
                     case .plugins: PluginsSection(store: store)
                     case .skills: SkillsSection(store: store)
                     case .mcps: MCPsSection(store: store)
@@ -518,9 +540,10 @@ struct MenuView: View {
             footer
         }
         .frame(
-            width: 360,
+            width: 440,
             height: min(1100, (NSScreen.main?.visibleFrame.height ?? 1000) - 80)
         )
+        .onAppear { portsStore.refresh() }
     }
 
     private var header: some View {
@@ -530,6 +553,7 @@ struct MenuView: View {
             Spacer()
             Button {
                 store.reload()
+                portsStore.refresh()
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 11, weight: .medium))
@@ -638,6 +662,17 @@ struct SkillsSection: View {
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .padding(.horizontal, 12).padding(.vertical, 4)
         } else {
+            HStack {
+                Spacer()
+                TwoStepConfirmButton(
+                    idleLabel: "Turn off all skills",
+                    confirmLabel: "Confirm turn off all?",
+                    systemImage: "xmark.circle",
+                    action: { store.turnOffAllSkills() }
+                )
+            }
+            .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 4)
+
             if !userSkills.isEmpty {
                 SubsectionLabel(text: "User")
                 ForEach(userSkills) { skill in
@@ -726,40 +761,64 @@ struct SkillRow: View {
                 Text(skill.displayName)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(skill.pluginEnabled ? .primary : .tertiary)
+                    .lineLimit(1)
                 Text(skill.source).font(.system(size: 10)).foregroundStyle(.secondary)
             }
-            Spacer()
-            Menu {
-                ForEach(SkillOverride.allCases) { state in
-                    Button {
-                        onPick(state)
-                    } label: {
-                        HStack {
-                            Image(systemName: state == current ? "checkmark" : "")
-                            Text(state.label)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: current.symbol).font(.system(size: 10))
-                    Text(current.label).font(.system(size: 11))
-                }
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Color.secondary.opacity(0.15))
-                .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .disabled(!skill.pluginEnabled)
-            .help(skill.pluginEnabled
-                  ? "On / Name only / Slash only / Off"
-                  : "Plugin disabled — enable plugin to control this skill")
+            Spacer(minLength: 8)
+            SkillStateSegments(current: current, enabled: skill.pluginEnabled, onPick: onPick)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
         .opacity(skill.pluginEnabled ? 1 : 0.6)
+    }
+}
+
+/// Inline four-state segmented control (On / Name / Slash / Off), replacing
+/// the old dropdown so all states are visible and pickable at a glance.
+struct SkillStateSegments: View {
+    let current: SkillOverride
+    let enabled: Bool
+    let onPick: (SkillOverride) -> Void
+
+    private func shortLabel(_ state: SkillOverride) -> String {
+        switch state {
+        case .on: return "On"
+        case .nameOnly: return "Name"
+        case .userInvocableOnly: return "Slash"
+        case .off: return "Off"
+        }
+    }
+
+    private func tooltip(_ state: SkillOverride) -> String {
+        switch state {
+        case .on: return "On — full skill body available to the model"
+        case .nameOnly: return "Name only — ~150 chars (name + description), keeps it discoverable"
+        case .userInvocableOnly: return "Slash only — invocable as /skill-name, hidden from model discovery"
+        case .off: return "Off — fully disabled"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(SkillOverride.allCases) { state in
+                Button {
+                    onPick(state)
+                } label: {
+                    Text(shortLabel(state))
+                        .font(.system(size: 10, weight: state == current ? .semibold : .regular))
+                        .lineLimit(1)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(state == current ? Color.accentColor : Color.clear)
+                        .foregroundStyle(state == current ? Color.white : Color.secondary)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(tooltip(state))
+            }
+        }
+        .padding(2)
+        .background(Color.secondary.opacity(0.12))
+        .clipShape(Capsule())
+        .disabled(!enabled)
     }
 }
 
