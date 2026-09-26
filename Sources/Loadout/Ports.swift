@@ -566,12 +566,21 @@ struct TwoStepConfirmButton: View {
                 Text(awaitingConfirm ? confirmLabel : idleLabel)
                     .font(.system(size: 10, weight: .medium))
             }
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(awaitingConfirm ? Color.red : Color.red.opacity(0.12))
-            .foregroundStyle(awaitingConfirm ? Color.white : Color.red)
-            .clipShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CapsuleButtonStyle(emphasized: awaitingConfirm))
+    }
+}
+
+/// Neutral pill button. Uses primary/background so it inverts correctly in light and dark mode.
+struct CapsuleButtonStyle: ButtonStyle {
+    var emphasized = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(emphasized ? AnyShapeStyle(.primary) : AnyShapeStyle(.primary.opacity(configuration.isPressed ? 0.16 : 0.08)))
+            .foregroundStyle(emphasized ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
+            .clipShape(Capsule())
     }
 }
 
@@ -630,13 +639,12 @@ struct PortRow: View {
                 Button {
                     if let url = entry.url { NSWorkspace.shared.open(url) }
                 } label: {
-                    Text("localhost:\(entry.port)")
+                    Text(verbatim: "localhost:\(entry.port)")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.blue)
                         .lineLimit(1)
                 }
                 .buttonStyle(.plain)
-                .help("Open http://localhost:\(entry.port)")
+                .help(Text(verbatim: "Open http://localhost:\(entry.port)"))
 
                 HStack(spacing: 3) {
                     Text(entry.projectName ?? entry.processName)
@@ -649,7 +657,7 @@ struct PortRow: View {
                 .lineLimit(1)
 
                 HStack(spacing: 4) {
-                    Text("PID \(entry.pid) · \(entry.processName)")
+                    Text(verbatim: "PID \(entry.pid) · \(entry.processName)")
                         .font(.system(size: 9)).foregroundStyle(.tertiary)
                     if let uptime = entry.uptime {
                         Text("· up \(uptime)").font(.system(size: 9)).foregroundStyle(.tertiary)
@@ -672,11 +680,9 @@ struct PortRow: View {
                       : "Can't restart — no known working directory for this process")
 
                 Button(action: onKill) {
-                    Image(systemName: "xmark.circle")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.red)
+                    Text("Kill").font(.system(size: 10, weight: .medium))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(CapsuleButtonStyle())
                 .help("Kill — SIGTERM, then SIGKILL if it doesn't stop")
             }
         }
