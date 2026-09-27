@@ -398,14 +398,53 @@ enum PortActions {
     }
 
     /// Signals every pid at once so N servers share one grace period instead of N.
-    static func killGraceful(pids: [pid_t]) {
+    /// With `stopGroup`, a pid whose process group is all dev tooling is stopped with
+    /// its whole group, like Ctrl-C, so wrappers (pnpm, nodemon, turbo, `tsx watch`)
+    /// can't respawn the server on the same port.
+    static func killGraceful(pids: [pid_t], stopGroup: Bool = true) {
         let alive = Set(pids).filter(pidExists)
         guard !alive.isEmpty else { return }
-        for pid in alive { kill(pid, SIGTERM) }
+        let groups = stopGroup ? devGroups(of: alive) : [:]
+        let pgids = Set(groups.values)
+        let loose = alive.filter { groups[$0] == nil }
+
+        for pgid in pgids { killpg(pgid, SIGTERM) }
+        for pid in loose { kill(pid, SIGTERM) }
         Thread.sleep(forTimeInterval: 1.5)
-        for pid in alive where pidExists(pid) {
-            kill(pid, SIGKILL)
+        for pgid in pgids where killpg(pgid, 0) == 0 { killpg(pgid, SIGKILL) }
+        for pid in loose where pidExists(pid) { kill(pid, SIGKILL) }
+    }
+
+    private static let shellNames: Set<String> = ["zsh", "bash", "sh", "fish", "dash"]
+
+    /// Maps each pid to its process group when every member of that group is a dev
+    /// process or a shell: a terminal job, or a task shell an agent started. Groups
+    /// holding anything else (an editor or app that spawned the server) are left out,
+    /// and those pids get signalled alone.
+    private static func devGroups(of pids: Set<pid_t>) -> [pid_t: pid_t] {
+        let ownGroup = getpgrp()
+        var wanted: [pid_t: pid_t] = [:]
+        for pid in pids {
+            let pgid = getpgid(pid)
+            if pgid > 1 && pgid != ownGroup { wanted[pid] = pgid }
         }
+        guard !wanted.isEmpty else { return [:] }
+
+        var safe: [pid_t: Bool] = [:]
+        for pgid in Set(wanted.values) { safe[pgid] = true }
+        let raw = runShell("ps -axo pgid=,command= 2>/dev/null")
+        for line in raw.split(separator: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            guard parts.count == 2, let pgid = pid_t(parts[0]), safe[pgid] == true else { continue }
+            let command = String(parts[1])
+            let argv0 = command.split(separator: " ").first.map(String.init) ?? command
+            let name = (argv0 as NSString).lastPathComponent
+            let isShell = shellNames.contains(name.hasPrefix("-") ? String(name.dropFirst()) : name)
+            if !isShell && !PortScanner.isDevProcess(processName: name, command: command) {
+                safe[pgid] = false
+            }
+        }
+        return wanted.filter { safe[$0.value] == true }
     }
 
     /// Re-reads the process's live command line and cwd right before acting,
@@ -428,7 +467,8 @@ enum PortActions {
     /// cwd, detached (survives Loadout quitting).
     static func restart(pid: pid_t) {
         guard let captured = captureCommandAndCwd(pid: pid) else { return }
-        killGraceful(pid: pid)
+        // Only the listener: the relaunch runs its command alone, not the wrapper's.
+        killGraceful(pids: [pid], stopGroup: false)
         launchDetached(command: captured.command, cwd: captured.cwd)
     }
 
@@ -463,10 +503,15 @@ final class PortsStore: ObservableObject {
     /// Ports with a kill/restart in flight. Cleared by the first scan that starts
     /// after the action finishes, so rows never flash back to idle before they vanish.
     @Published private(set) var pending: [Int: PendingAction] = [:]
+    /// What the last kill did, e.g. "Stopped 3 servers". Shown briefly, then cleared.
+    @Published private(set) var notice: String?
 
     private var autoRefreshTask: Task<Void, Never>?
     private var rescanQueued = false
     private var settledPorts: Set<Int> = []
+    /// Killed ports whose outcome the next scan reports.
+    private var killedPorts: Set<Int> = []
+    private var noticeTask: Task<Void, Never>?
 
     func refresh() {
         guard !isScanning else {
@@ -475,11 +520,14 @@ final class PortsStore: ObservableObject {
         }
         isScanning = true
         let settling = settledPorts
+        let reporting = killedPorts
         settledPorts = []
+        killedPorts = []
         Task {
             let scanned = await Task.detached { PortScanner.scan() }.value
             self.ports = scanned
             for port in settling { self.pending[port] = nil }
+            if !reporting.isEmpty { self.report(killed: reporting, scanned: scanned) }
             self.isScanning = false
             self.probeHealth(for: scanned)
             if self.rescanQueued {
@@ -527,9 +575,30 @@ final class PortsStore: ObservableObject {
         autoRefreshTask = nil
     }
 
-    private func settle(_ ports: [Int]) {
+    private func settle(_ ports: [Int], killed: Bool = false) {
         settledPorts.formUnion(ports)
+        if killed { killedPorts.formUnion(ports) }
         refresh()
+    }
+
+    /// A port that is still listening after its kill either ignored the signals or
+    /// was respawned by something outside its process group.
+    private func report(killed: Set<Int>, scanned: [PortEntry]) {
+        let survivors = killed.intersection(scanned.map(\.port)).sorted()
+        let stopped = killed.count - survivors.count
+        let stillRunning = survivors.map { ":\($0)" }.joined(separator: ", ")
+        if survivors.isEmpty {
+            notice = stopped == 1 ? "Stopped :\(killed.first!)" : "Stopped \(stopped) servers"
+        } else if stopped > 0 {
+            notice = "Stopped \(stopped) · \(stillRunning) still running"
+        } else {
+            notice = "\(stillRunning) didn't stop"
+        }
+        noticeTask?.cancel()
+        noticeTask = Task {
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            if !Task.isCancelled { self.notice = nil }
+        }
     }
 
     func kill(_ entry: PortEntry) {
@@ -538,7 +607,7 @@ final class PortsStore: ObservableObject {
         pending[port] = .stopping
         Task.detached {
             PortActions.killGraceful(pid: pid)
-            await MainActor.run { self.settle([port]) }
+            await MainActor.run { self.settle([port], killed: true) }
         }
     }
 
@@ -548,7 +617,7 @@ final class PortsStore: ObservableObject {
         for port in affected { pending[port] = .stopping }
         Task.detached {
             PortActions.killGraceful(pids: pids)
-            await MainActor.run { self.settle(affected) }
+            await MainActor.run { self.settle(affected, killed: true) }
         }
     }
 
@@ -656,10 +725,10 @@ struct PortsSection: View {
                 EmptyState(
                     symbol: "dot.radiowaves.left.and.right",
                     title: store.isScanning ? "Scanning ports…" : "No dev servers running",
-                    message: store.isScanning ? nil : "Start one and it shows up here within a few seconds."
+                    message: store.notice ?? (store.isScanning ? nil : "Start one and it shows up here within a few seconds.")
                 )
             } else {
-                ListToolbar(summary: "\(store.ports.count) listening") {
+                ListToolbar(summary: store.notice ?? "\(store.ports.count) listening") {
                     TwoStepConfirmButton(
                         idleLabel: "Kill all",
                         confirmLabel: "Confirm kill all",
