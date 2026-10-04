@@ -674,14 +674,15 @@ func runClaudeMcpList() -> [ParsedMcpEntry] {
     p.arguments = ["-lc", "claude mcp list"]
     let outPipe = Pipe()
     p.standardOutput = outPipe
-    p.standardError = Pipe()
+    p.standardError = FileHandle.nullDevice
     do {
         try p.run()
-        p.waitUntilExit()
     } catch {
         return []
     }
+    // Read before waiting, so a long listing can't fill the pipe and hang the child.
     let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
     let text = String(data: data, encoding: .utf8) ?? ""
     return parseMcpList(text)
 }

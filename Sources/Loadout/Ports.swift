@@ -318,14 +318,16 @@ private func runShell(_ command: String) -> String {
     p.arguments = ["-lc", command]
     let outPipe = Pipe()
     p.standardOutput = outPipe
-    p.standardError = Pipe()
+    p.standardError = FileHandle.nullDevice
     do {
         try p.run()
-        p.waitUntilExit()
     } catch {
         return ""
     }
+    // Read before waiting: a pipe holds 64 KB, and a child that fills it (a full
+    // `ps` listing does) blocks on write and never exits.
     let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
     return String(data: data, encoding: .utf8) ?? ""
 }
 
@@ -670,6 +672,9 @@ struct TwoStepConfirmButton: View {
                 }
                 .font(.system(size: 10, weight: .semibold))
                 ZStack {
+                    // Holds the idle width, so a shorter confirm label can't pull the
+                    // button out from under the cursor between the two clicks.
+                    Text(idleLabel).hidden()
                     if awaitingConfirm {
                         Text(confirmLabel).transition(.textSwap)
                     } else {
@@ -843,6 +848,11 @@ struct PortRow: View {
         .opacity(pending == nil ? 1 : 0.6)
         .animation(Motion.hover, value: pending)
         .rowChrome(verticalPadding: 10)
+        // The whole card opens the server. Kill and Restart are buttons, so they keep
+        // their own clicks.
+        .onTapGesture {
+            if pending == nil, let url = entry.url { NSWorkspace.shared.open(url) }
+        }
     }
 }
 
