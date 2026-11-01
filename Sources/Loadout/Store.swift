@@ -70,8 +70,6 @@ final class AppStore: ObservableObject {
     private func cleanUpOldVersions() {
         do {
             try engine.restoreParkedServers()
-            let dead = try InventoryLoader(paths: paths, state: engine.state).load(scope: .allProjects).deadOverrideKeys
-            if !dead.isEmpty { try engine.removeDeadOverrides(dead) }
         } catch {
             lastError = "Could not tidy older Loadout settings: \(error.localizedDescription)"
         }
@@ -132,6 +130,7 @@ final class AppStore: ObservableObject {
             return
         }
         discovery = .done
+        engine.state.connectorStatus = [:]
         for entry in found {
             engine.state.connectors[entry.name] = entry.url
             engine.state.connectorStatus[entry.name] = entry.status
@@ -172,7 +171,7 @@ final class AppStore: ObservableObject {
         panel.message = "Pick a project folder"
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url {
-            select(.project(url.standardizedFileURL.path))
+            select(.project(canonicalPath(url.path)))
         }
     }
 
@@ -263,6 +262,13 @@ final class AppStore: ObservableObject {
     func turnOffAllSkills() {
         perform("All skills off \(whereText)") {
             try engine.setSkills(inventory.skills, to: .off, scope: scope)
+        }
+    }
+
+    func removeDeadOverrides() {
+        let keys = inventory.deadOverrideKeys
+        perform("Removed \(keys.count) old skill settings", copyReload: false) {
+            try engine.removeDeadOverrides(keys)
         }
     }
 

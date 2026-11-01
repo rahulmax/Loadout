@@ -899,12 +899,14 @@ private struct PortGroupHeader: View {
                 IconButton(systemName: "slider.horizontal.3", help: "Tools for this project", action: onOpen)
                     .accessibilityLabel("Tools for \(group.name)")
             }
-            TwoStepConfirmButton(
-                idleLabel: "Stop all",
-                confirmLabel: "Confirm stop",
-                systemImage: "xmark",
-                action: onStop
-            )
+            if group.ports.count > 1 {
+                TwoStepConfirmButton(
+                    idleLabel: "Kill \(group.ports.count)",
+                    confirmLabel: "Confirm kill \(group.ports.count)",
+                    systemImage: "xmark",
+                    action: onStop
+                )
+            }
         }
         .padding(.leading, Theme.gutter)
         .padding(.trailing, Theme.rowInset + 4)

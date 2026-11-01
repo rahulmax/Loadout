@@ -222,6 +222,16 @@ final class ConfigWriter {
     }
 }
 
+// MARK: - Paths
+
+/// The path tools see from inside a folder. Codex trust and Claude Code's project entries
+/// are keyed on this, and Foundation's own resolving turns /private/var back into /var.
+func canonicalPath(_ path: String) -> String {
+    guard let resolved = realpath(path, nil) else { return path }
+    defer { free(resolved) }
+    return String(cString: resolved)
+}
+
 // MARK: - Shell
 
 /// Runs a command through a login shell and returns stdout. Reads before waiting, so

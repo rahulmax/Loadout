@@ -456,6 +456,18 @@ struct ServiceRow: View {
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
+    /// The button's label replaces its contents for VoiceOver, so what the row shows
+    /// has to be repeated here or it's lost.
+    private var accessibilityDetail: String {
+        var parts = [expanded ? "Expanded" : "Collapsed", subtitle]
+        if let statusLine { parts.append(statusLine) }
+        if service.setHere { parts.append("This project") }
+        if !service.setInProjects.isEmpty {
+            parts.append("Set in \(service.setInProjects.count) \(service.setInProjects.count == 1 ? "project" : "projects")")
+        }
+        return parts.joined(separator: ". ")
+    }
+
     private var statusLine: String? {
         service.active.compactMap(\.status).first { $0.lowercased() != "connected" }
     }
@@ -502,7 +514,7 @@ struct ServiceRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(service.name), details")
-                .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                .accessibilityValue(accessibilityDetail)
 
                 if service.setHere {
                     IconButton(systemName: "arrow.uturn.backward", help: "Back to the default") {
@@ -703,6 +715,21 @@ struct SkillsSection: View {
                 }
             }
             SkillLegend()
+            if !store.inventory.deadOverrideKeys.isEmpty {
+                let count = store.inventory.deadOverrideKeys.count
+                HStack(spacing: 8) {
+                    Text(verbatim: "\(count) old plugin skill \(count == 1 ? "setting does" : "settings do") nothing. Claude Code ignores them.")
+                        .font(.rowSubtitle)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 6)
+                    Button("Remove") { store.removeDeadOverrides() }
+                        .buttonStyle(CapsuleButtonStyle())
+                }
+                .padding(.leading, Theme.gutter)
+                .padding(.trailing, Theme.rowInset + 4)
+                .padding(.top, 6)
+            }
             if !skills.isEmpty {
                 SectionLabel(title: "Your skills", count: skills.count)
                 ForEach(matches) { skill in

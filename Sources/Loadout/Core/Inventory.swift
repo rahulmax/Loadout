@@ -41,8 +41,8 @@ func discoverConnectors(_ paths: Paths) -> [ParsedMcpEntry]? {
     }
     #endif
     // A fake home (fixtures, tests) must never reach the real account through the CLI.
-    let realHome = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-    guard paths.home.standardizedFileURL.path == realHome else { return [] }
+    let realHome = canonicalPath(FileManager.default.homeDirectoryForCurrentUser.path)
+    guard canonicalPath(paths.home.path) == realHome else { return [] }
     try? FileManager.default.createDirectory(at: paths.discoveryFolder, withIntermediateDirectories: true)
     let result = runLoginShell("claude --setting-sources project,local mcp list", cwd: paths.discoveryFolder)
     guard result.status == 0 else { return nil }
@@ -112,7 +112,7 @@ enum ProjectCatalog {
         let codex = TOMLDocument((try? String(contentsOf: paths.codexConfig, encoding: .utf8)) ?? "")
         candidates.formUnion(codex.children(of: "projects"))
 
-        let home = paths.home.standardizedFileURL.path
+        let home = canonicalPath(paths.home.path)
         let excluded = scratchFolders + [paths.appSupport.path + "/"]
         var result: [KnownProject] = []
         for path in candidates {
@@ -122,13 +122,25 @@ enum ProjectCatalog {
                   fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { continue }
             result.append(KnownProject(path: path, lastUsed: lastUsed(path, paths: paths)))
         }
-        return result.sorted {
+        let sorted = result.sorted {
             switch ($0.lastUsed, $1.lastUsed) {
             case let (a?, b?): return a > b
             case (_?, nil): return true
             case (nil, _?): return false
-            case (nil, nil): return $0.name.lowercased() < $1.name.lowercased()
+            case (nil, nil): return $0.path.lowercased() < $1.path.lowercased()
             }
+        }
+        return uniqueFolders(sorted)
+    }
+
+    /// On a case-insensitive disk `Synacor` and `synacor` are one folder that history
+    /// lists twice. The same file number shows it. Sorted input means the recent one stays.
+    private static func uniqueFolders(_ projects: [KnownProject]) -> [KnownProject] {
+        var seen = Set<UInt64>()
+        return projects.filter { project in
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: project.path),
+                  let number = attributes[.systemFileNumber] as? UInt64 else { return true }
+            return seen.insert(number).inserted
         }
     }
 
@@ -186,7 +198,7 @@ struct InventoryLoader {
     }
 
     private func isHome(_ project: String) -> Bool {
-        URL(fileURLWithPath: project).standardizedFileURL.path == paths.home.standardizedFileURL.path
+        canonicalPath(project) == canonicalPath(paths.home.path)
     }
 
     func load(scope: Scope) throws -> Inventory {
@@ -221,6 +233,8 @@ struct InventoryLoader {
         var plugin: (id: String, name: String)?
         var isConnector = false
         var status: String?
+        /// Known from history, but not on the account's current list.
+        var notConnected = false
     }
 
     struct InstalledPluginInfo {
@@ -272,13 +286,20 @@ struct InventoryLoader {
         }
         return names.filter { $0.hasPrefix("claude.ai ") }.sorted().map { name in
             let short = String(name.dropFirst("claude.ai ".count))
+            let url = state.connectors[name] ?? Self.knownConnectorUrls[short]
+            // Discovery gives every live connector a status and a URL. With no status
+            // after a discovery, or no URL ever, it can't be running.
+            let discovered = !state.connectorStatus.isEmpty
+            let live = state.connectorStatus[name] != nil
+            let notConnected = url == nil || (discovered && !live)
             return ClaudeSource(
                 name: name,
-                definition: ServerDefinition(url: state.connectors[name] ?? Self.knownConnectorUrls[short], portable: false),
+                definition: ServerDefinition(url: url, portable: false),
                 label: "claude.ai connector",
                 kind: "claude.ai",
                 isConnector: true,
-                status: state.connectorStatus[name]
+                status: notConnected ? "Not connected" : state.connectorStatus[name],
+                notConnected: notConnected
             )
         }
     }
@@ -404,6 +425,7 @@ struct InventoryLoader {
             }
             let onlyPlugin = !ref.hasStandaloneSource
             let pluginOn = ref.ownerPlugins.contains { settings.pluginEnabled($0) }
+            let notConnected = group.allSatisfy(\.notConnected)
             let setHere: Bool
             if scope == .allProjects {
                 setHere = false
@@ -415,11 +437,13 @@ struct InventoryLoader {
                 harness: .claude,
                 label: labels.joined(separator: ", "),
                 target: .claudeServer(ref),
-                on: settings.isOn(ref) && (!onlyPlugin || pluginOn),
+                on: settings.isOn(ref) && (!onlyPlugin || pluginOn) && !notConnected,
                 setUp: true,
                 setHere: setHere,
-                lock: claudeLock(ref, scope: scope, settings: settings),
-                status: group.compactMap(\.status).first,
+                lock: notConnected
+                    ? ControlLock(reason: "Not connected on claude.ai right now. Connect it there first.")
+                    : claudeLock(ref, scope: scope, settings: settings),
+                status: group.filter { !$0.notConnected }.compactMap(\.status).first ?? (notConnected ? "Not connected" : nil),
                 groupKeys: keys,
                 definition: primary.definition,
                 kind: group.contains(where: { $0.kind == "MCP" }) ? "MCP" : group[0].kind
@@ -431,9 +455,6 @@ struct InventoryLoader {
     private func claudeLock(_ ref: ClaudeServerRef, scope: Scope, settings: ClaudeSettings) -> ControlLock? {
         if settings.deniedByShared(ref) {
             return ControlLock(reason: "Blocked by this repo's .claude/settings.json. Edit that file to change it.")
-        }
-        if ref.allowRule == nil && !settings.isOn(ref) {
-            return ControlLock(reason: "Not connected on claude.ai right now. Connect it there first.")
         }
         if scope != .allProjects && settings.deniedByUser(ref) {
             return ControlLock(
@@ -635,9 +656,20 @@ struct InventoryLoader {
             }
             return x
         }
+        // `figma-developer` joins `figma`, but only when a service called exactly `figma`
+        // exists. So `google-drive` and `google-calendar` never merge on their own.
+        let exactNames = Set(controls.flatMap(\.groupKeys).filter { $0.hasPrefix("name:") })
+        func keys(_ control: Control) -> Set<String> {
+            var keys = control.groupKeys
+            for key in control.groupKeys where key.hasPrefix("name:") {
+                let token = key.dropFirst(5).prefix { $0 != "-" && $0 != "_" && $0 != " " }
+                if exactNames.contains("name:\(token)") { keys.insert("name:\(token)") }
+            }
+            return keys
+        }
         var firstWithKey: [String: Int] = [:]
         for (index, control) in controls.enumerated() {
-            for key in control.groupKeys {
+            for key in keys(control) {
                 if let other = firstWithKey[key] {
                     parent[find(index)] = find(other)
                 } else {
@@ -682,7 +714,8 @@ struct InventoryLoader {
                 return String(connector.dropFirst("claude.ai ".count))
             }
         }
-        let names = members.flatMap(\.groupKeys).filter { $0.hasPrefix("name:") }.map { String($0.dropFirst(5)) }.sorted()
+        let names = members.flatMap(\.groupKeys).filter { $0.hasPrefix("name:") }.map { String($0.dropFirst(5)) }
+            .sorted { ($0.count, $0) < ($1.count, $1) }
         return titleCase(names.first ?? "Unknown")
     }
 

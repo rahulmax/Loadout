@@ -659,6 +659,9 @@ struct TabBar: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableButtonStyle())
+                .accessibilityLabel(item.rawValue)
+                .accessibilityValue("\(count(item))")
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
         .padding(3)

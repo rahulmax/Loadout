@@ -12,9 +12,10 @@ final class Fixture {
     lazy var engine = Engine(paths: paths, state: state, writer: writer)
 
     init() throws {
-        root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("loadout-tests-\(UUID().uuidString)")
-            .resolvingSymlinksInPath()
+        // The CLIs see the real path (/private/var/…), so the fixture has to use it too.
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("loadout-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        root = URL(fileURLWithPath: canonicalPath(temp.path))
         home = root.appendingPathComponent("home")
         let projectUrl = root.appendingPathComponent("work/app")
         project = projectUrl.path
@@ -260,6 +261,18 @@ final class GroupingTests: XCTestCase {
         XCTAssertEqual(names, ["Atlassian", "Brand New", "Higgsfield"])
     }
 
+    func testLongerNameJoinsAnExactServiceOnly() throws {
+        let f = try Fixture()
+        f.engine.state.harnesses["cursor"] = true
+        try f.writeJSON(f.paths.claudeJson, ["mcpServers": [
+            "figma": ["url": "https://mcp.figma.com/mcp"],
+            "google-drive": ["url": "https://a.example/mcp"],
+            "google-calendar": ["url": "https://b.example/mcp"],
+        ]])
+        try f.writeJSON(f.paths.cursorConfig, ["mcpServers": ["figma-developer-mcp": ["command": "npx"]]])
+        XCTAssertEqual(try f.inventory(.allProjects).services.map(\.name), ["Figma", "Google Calendar", "Google Drive"])
+    }
+
     func testConnectorOnlyInADenyEntryStaysListed() throws {
         let f = try Fixture()
         try f.writeJSON(f.paths.claudeSettings, ["deniedMcpServers": [["serverName": "claude.ai Higgsfield"]]])
@@ -355,6 +368,28 @@ final class ClaudeScopeTests: XCTestCase {
         try f.engine.setService(try f.service("Slack", scope), on: true, scope: scope)
         let local = try f.settings(f.paths.claudeLocal(f.project))
         XCTAssertEqual((local["allowedMcpServers"] as? [[String: String]])?.first?["serverUrl"], "https://mcp.slack.com/*")
+    }
+
+    func testConnectorMissingFromDiscoveryIsNotConnected() throws {
+        let f = try Fixture()
+        try f.writeJSON(f.paths.claudeJson, ["claudeAiMcpEverConnected": ["claude.ai Slack", "claude.ai Gmail", "claude.ai Atlassian"]])
+        f.engine.state.connectors["claude.ai Gmail"] = "https://gmailmcp.googleapis.com/mcp/v1"
+        f.engine.state.connectorStatus["claude.ai Gmail"] = "Connected"
+        let services = try f.inventory(.allProjects).services
+        func service(_ name: String) throws -> Service { try XCTUnwrap(services.first { $0.name == name }) }
+        XCTAssertTrue(try service("Gmail").isOn)
+        for name in ["Slack", "Atlassian"] {
+            XCTAssertEqual(try service(name).mainState, .locked(on: false), name)
+            XCTAssertEqual(try service(name).active.first?.status, "Not connected", name)
+        }
+    }
+
+    func testConnectorAlsoAPluginStaysSwitchable() throws {
+        let f = try Fixture()
+        try f.writeJSON(f.paths.claudeJson, ["claudeAiMcpEverConnected": ["claude.ai Figma"]])
+        try f.addPlugin("figma@official", server: ["url": "https://mcp.figma.com/mcp"])
+        f.engine.state.connectorStatus["claude.ai Other"] = "Connected"
+        XCTAssertEqual(try f.service("Figma", .allProjects).mainState, .on)
     }
 
     func testConnectorWithNoUrlIsLockedWhenOff() throws {
@@ -923,6 +958,22 @@ final class ProjectCatalogTests: XCTestCase {
             try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-age)], ofItemAtPath: url.path)
         }
         XCTAssertEqual(ProjectCatalog.load(f.paths, state: AppState(), scratchFolders: []).first?.path, older.path)
+    }
+}
+
+final class DeadOverrideTests: XCTestCase {
+    /// Removing them is the user's click, so loading must never touch the file.
+    @MainActor func testOpeningTheAppLeavesThemAlone() throws {
+        let f = try Fixture()
+        let text = "{\"skillOverrides\":{\"figma:use\":\"off\"}}"
+        try f.write(f.paths.claudeSettings, text)
+        let store = AppStore(home: f.home)
+        XCTAssertEqual(store.inventory.deadOverrideKeys, ["figma:use"])
+        XCTAssertEqual(try String(contentsOf: f.paths.claudeSettings, encoding: .utf8), text)
+        store.removeDeadOverrides()
+        XCTAssertNil(try f.settings(f.paths.claudeSettings)["skillOverrides"])
+        store.undo()
+        XCTAssertEqual(try String(contentsOf: f.paths.claudeSettings, encoding: .utf8), text)
     }
 }
 
