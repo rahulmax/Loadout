@@ -985,6 +985,7 @@ struct PortRow: View {
                                 : "Can't restart — no known working directory for this process",
                             action: onRestart
                         )
+                        .accessibilityLabel("Restart localhost:\(entry.port)")
                         .disabled(!entry.canRestart)
 
                         Button(action: onKill) { Text("Kill") }

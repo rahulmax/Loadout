@@ -424,15 +424,20 @@ struct Inventory {
     /// True until the user switches Claude Code to default-off.
     var needsMigration = false
 
-    /// Estimated always-on tokens from skill descriptions in the chosen scope.
-    var skillTokens: Int {
-        let own = skills.reduce(0) { total, skill in
+    /// Estimated always-on tokens from the user's and project's own skills.
+    var ownSkillTokens: Int {
+        skills.reduce(0) { total, skill in
             switch skill.state {
             case .on: return total + skill.tokens
             case .nameOnly: return total + max(1, skill.key.count / 4)
             case .userInvocableOnly, .off: return total
             }
         }
+    }
+
+    /// The same, plus the skills of plugins that are on in the chosen scope.
+    var skillTokens: Int {
+        let own = ownSkillTokens
         let plugins = services.flatMap(\.pluginSkills).filter(\.enabled).reduce(0) { $0 + $1.tokens }
         return own + plugins
     }

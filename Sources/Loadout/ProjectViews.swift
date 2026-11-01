@@ -312,17 +312,24 @@ struct SetHereTag: View {
 struct ProjectMarker: View {
     let projects: [String]
 
+    /// One project is named outright. More than that, the tooltip lists them.
+    static func summary(_ projects: [String]) -> String {
+        projects.count == 1 ? "Set in \(projects[0])" : "Set in \(projects.count) projects"
+    }
+
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: "folder")
                 .font(.system(size: 9, weight: .semibold))
-            Text(verbatim: "Set in \(projects.count) \(projects.count == 1 ? "project" : "projects")")
+            Text(verbatim: Self.summary(projects))
                 .font(.rowMeta)
         }
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .fixedSize()
         .help(projects.joined(separator: ", "))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(Self.summary(projects)): \(projects.joined(separator: ", "))")
     }
 }
 
@@ -359,7 +366,7 @@ struct MigrationBanner: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Control servers per project")
                 .font(.rowTitle)
-            Text("Today a server blocked for all projects can't be turned on in just one, and new connectors turn on by themselves. Switch so a server is off unless you allow it. What's on today stays on, and your settings are backed up first.")
+            Text("Right now, a server turned off for all projects can't be turned on for just one, and new claude.ai connectors start on. After this switch, servers are off unless you allow them. What's on today stays on. Your settings are backed up first.")
                 .font(.rowSubtitle)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -370,7 +377,7 @@ struct MigrationBanner: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
-                Button("Switch") { store.migrate() }
+                Button("Switch to per-project control") { store.migrate() }
                     .buttonStyle(CapsuleButtonStyle())
                     .disabled(!store.canMigrate)
                 Button("Not now") { store.migrationDismissed = true }
@@ -408,7 +415,7 @@ struct ToolsSection: View {
         let on = services.filter(\.isOn).count
         let tokens = services.filter(\.isOn).reduce(0) { $0 + $1.pluginSkills.filter(\.enabled).reduce(0) { $0 + $1.tokens } }
         var text = "\(on) of \(services.count) on"
-        if tokens > 0 { text += " · plugin skills \(formatTokens(tokens))" }
+        if tokens > 0 { text += " · plugin skills use \(formatTokens(tokens))" }
         return text
     }
 
@@ -463,13 +470,35 @@ struct ServiceRow: View {
         if let statusLine { parts.append(statusLine) }
         if service.setHere { parts.append("This project") }
         if !service.setInProjects.isEmpty {
-            parts.append("Set in \(service.setInProjects.count) \(service.setInProjects.count == 1 ? "project" : "projects")")
+            parts.append(ProjectMarker.summary(service.setInProjects))
         }
         return parts.joined(separator: ". ")
     }
 
+    /// The third line: why the row can't be switched, which tools differ, or a problem.
+    /// A reason that lives only in a tooltip would leave a control that seems broken.
     private var statusLine: String? {
-        service.active.compactMap(\.status).first { $0.lowercased() != "connected" }
+        switch service.mainState {
+        case .locked:
+            return service.firstLockReason
+        case .mixed:
+            return mixedDescription
+        case .on, .off:
+            return service.active.compactMap(\.status).first { $0.lowercased() != "connected" }
+        }
+    }
+
+    private var mixedDescription: String {
+        let items = service.switchable
+        let tools = Harness.allCases.filter { harness in items.contains { $0.harness == harness } }
+        let on = tools.filter { harness in items.contains { $0.harness == harness && $0.on } }
+        let off = tools.filter { harness in !on.contains(harness) }
+        guard !off.isEmpty else {
+            return "Partly on: some parts are off in \(on.map(\.label).joined(separator: ", "))"
+        }
+        let onNames = on.map(\.label).joined(separator: ", ")
+        let offNames = off.map(\.label).joined(separator: ", ")
+        return "Partly on: on in \(onNames), off in \(offNames)"
     }
 
     var body: some View {
@@ -501,7 +530,7 @@ struct ServiceRow: View {
                                 Text(verbatim: statusLine)
                                     .font(.rowMeta)
                                     .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                         Spacer(minLength: 4)
@@ -559,12 +588,7 @@ struct ServiceRow: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(service.name): \(on ? "on" : "off"), locked. \(service.firstLockReason ?? "")")
         case .mixed:
-            HStack(spacing: 6) {
-                Text("Partly on")
-                    .font(.rowMeta)
-                    .foregroundStyle(.secondary)
-                LoadoutSwitch(label: service.name, isOn: true) { store.setService(service, on: false) }
-            }
+            LoadoutSwitch(label: service.name, isOn: true) { store.setService(service, on: false) }
         case .on:
             LoadoutSwitch(label: service.name, isOn: true) { store.setService(service, on: false) }
         case .off:
@@ -692,7 +716,7 @@ struct SkillsSection: View {
     }
 
     private var summary: String {
-        "\(skills.filter { $0.state == .on }.count) of \(skills.count) on Auto · \(formatTokens(store.inventory.skillTokens)) every session"
+        "\(skills.filter { $0.state == .on }.count) of \(skills.count) on Auto · \(formatTokens(store.inventory.ownSkillTokens)) each session"
     }
 
     var body: some View {
@@ -708,7 +732,7 @@ struct SkillsSection: View {
                 if !skills.isEmpty {
                     TwoStepConfirmButton(
                         idleLabel: "Turn all off",
-                        confirmLabel: "Confirm",
+                        confirmLabel: "Turn off \(skills.count) \(store.selectedProject == nil ? "by default" : "here")",
                         systemImage: "power",
                         action: { store.turnOffAllSkills() }
                     )
@@ -723,7 +747,7 @@ struct SkillsSection: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 6)
-                    Button("Remove") { store.removeDeadOverrides() }
+                    Button("Remove \(count)") { store.removeDeadOverrides() }
                         .buttonStyle(CapsuleButtonStyle())
                 }
                 .padding(.leading, Theme.gutter)
@@ -859,10 +883,10 @@ struct SkillStateSegments: View {
                     onPick(state)
                 } label: {
                     Text(verbatim: shortLabel(state))
-                        .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? (state == .on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary)) : AnyShapeStyle(enabled ? .secondary : .quaternary))
+                        .font(.system(size: 11, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? (state == .on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary)) : AnyShapeStyle(enabled ? .secondary : .tertiary))
                         .lineLimit(1)
-                        .frame(width: 46, height: 20)
+                        .frame(width: 48, height: 24)
                         .background {
                             if selected {
                                 // Only Auto earns the accent. Every reduced state stays neutral.

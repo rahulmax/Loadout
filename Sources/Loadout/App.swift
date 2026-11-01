@@ -581,19 +581,21 @@ struct MenuView: View {
                             .help(note.text)
                         if note.copiedReload {
                             HStack(spacing: 4) {
-                                Text("Paste")
+                                Text("Copied")
                                 CodeChip(text: "/reload-plugins")
-                                Text("in open sessions")
+                                Text("for open Claude sessions")
                             }
+                            .help("Paste it into an open Claude Code session. Other tools and new sessions pick the change up when they start.")
                         }
                     }
                     .id(note.id)
                     .transition(.textSwap)
                 } else {
                     HStack(spacing: 4) {
-                        Text("Changes copy")
+                        Text("Open Claude sessions need")
                         CodeChip(text: "/reload-plugins")
                     }
+                    .help("Each change copies the command. Other tools and new sessions pick the change up when they start.")
                     .transition(.textSwap)
                 }
             }

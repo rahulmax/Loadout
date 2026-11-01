@@ -17,6 +17,17 @@ cp ".build/release/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/"
 cp Info.plist "$APP_BUNDLE/Contents/"
 cp Resources/* "$APP_BUNDLE/Contents/Resources/"
 
+echo "→ ad-hoc signing"
+codesign --force --deep --sign - "$APP_BUNDLE"
+
+if [[ "${1:-}" == "--zip" ]]; then
+  VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Info.plist)
+  ZIP="$APP_NAME-$VERSION.zip"
+  rm -f "$ZIP"
+  ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP"
+  echo "✓ Built $ZIP"
+fi
+
 echo "✓ Built $APP_BUNDLE"
 echo "  Run:    open $APP_BUNDLE"
 echo "  Install: cp -R $APP_BUNDLE /Applications/"
