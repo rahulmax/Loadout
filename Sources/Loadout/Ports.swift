@@ -706,12 +706,14 @@ struct CapsuleButtonStyle: ButtonStyle {
         var body: some View {
             configuration.label
                 .font(.control)
+                // On the label only. Around the fill too, `.primary` would resolve to
+                // this style, and fill and text would become the same color.
+                .foregroundStyle(emphasized ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
                 .padding(.horizontal, 10)
                 .frame(height: 24)
                 .background(
-                    Capsule().fill(emphasized ? AnyShapeStyle(.primary) : AnyShapeStyle(hovering ? Theme.hoverStrong.opacity(1.5) : Theme.hoverStrong))
+                    Capsule().fill(emphasized ? AnyShapeStyle(Color.primary) : AnyShapeStyle(hovering ? Theme.hoverStrong.opacity(1.5) : Theme.hoverStrong))
                 )
-                .foregroundStyle(emphasized ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
                 .contentShape(Capsule())
                 .scaleEffect(configuration.isPressed ? 0.96 : 1)
                 .onHover { hovering = $0 }
