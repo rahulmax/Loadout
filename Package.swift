@@ -5,6 +5,7 @@ let package = Package(
     name: "Loadout",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "Loadout")
+        .executableTarget(name: "Loadout"),
+        .testTarget(name: "LoadoutTests", dependencies: ["Loadout"])
     ]
 )

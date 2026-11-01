@@ -613,9 +613,11 @@ final class PortsStore: ObservableObject {
         }
     }
 
-    func killAll() {
-        let pids = ports.map { $0.pid }
-        let affected = ports.map { $0.port }
+    func killAll() { kill(group: ports) }
+
+    func kill(group: [PortEntry]) {
+        let pids = group.map { $0.pid }
+        let affected = group.map { $0.port }
         for port in affected { pending[port] = .stopping }
         Task.detached {
             PortActions.killGraceful(pids: pids)
@@ -720,9 +722,68 @@ struct CapsuleButtonStyle: ButtonStyle {
     }
 }
 
+/// Ports that belong to one project.
+struct PortGroup: Identifiable, Hashable {
+    /// Nil for servers running outside any project.
+    let path: String?
+    let ports: [PortEntry]
+
+    var id: String { path ?? "" }
+    var name: String { path.map { ($0 as NSString).lastPathComponent } ?? "Other" }
+    var displayPath: String? { path.map { ($0 as NSString).abbreviatingWithTildeInPath } }
+
+    /// Where a server runs relative to its project. Nil when it's the project itself.
+    func subfolder(of entry: PortEntry) -> String? {
+        guard let path, let cwd = entry.cwd, cwd != path else { return nil }
+        let prefix = path + "/"
+        return cwd.hasPrefix(prefix) ? String(cwd.dropFirst(prefix.count)) : cwd
+    }
+
+    /// The deepest known project containing a server's folder wins. Failing that, the
+    /// server's own folder is its project, unless that's home or the disk root, which
+    /// say nothing about what it belongs to. Other always sorts last.
+    static func make(from ports: [PortEntry], known: [String], home: String) -> [PortGroup] {
+        let candidates = known.filter { $0 != home && $0 != "/" }
+        let grouped = Dictionary(grouping: ports) { entry -> String? in
+            guard let cwd = entry.cwd, cwd != home, cwd != "/" else { return nil }
+            return ProjectCatalog.owner(of: cwd, among: candidates) ?? cwd
+        }
+        return grouped
+            .map { PortGroup(path: $0.key, ports: $0.value.sorted { $0.port < $1.port }) }
+            .sorted { a, b in
+                if (a.path == nil) != (b.path == nil) { return b.path == nil }
+                return a.name.lowercased() < b.name.lowercased()
+            }
+    }
+}
+
 struct PortsSection: View {
     @ObservedObject var store: PortsStore
+    let knownProjects: [String]
+    /// The project chosen at the top of the panel, if any.
+    var selectedProject: String?
+    var onOpenProject: (String) -> Void = { _ in }
+
+    @State private var showAll = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var groups: [PortGroup] {
+        PortGroup.make(from: store.ports, known: knownProjects, home: NSHomeDirectory())
+    }
+
+    private var filtered: Bool { selectedProject != nil && !showAll }
+
+    private var visible: [PortGroup] {
+        guard filtered else { return groups }
+        return groups.filter { $0.path == selectedProject }
+    }
+
+    private var summary: String {
+        if let notice = store.notice { return notice }
+        let projects = groups.filter { $0.path != nil }.count
+        let noun = projects == 1 ? "project" : "projects"
+        return projects == 0 ? "\(store.ports.count) listening" : "\(store.ports.count) listening in \(projects) \(noun)"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -733,7 +794,7 @@ struct PortsSection: View {
                     message: store.notice ?? (store.isScanning ? nil : "Start one and it shows up here within a few seconds.")
                 )
             } else {
-                ListToolbar(summary: store.notice ?? "\(store.ports.count) listening") {
+                ListToolbar(summary: summary) {
                     TwoStepConfirmButton(
                         idleLabel: "Kill all",
                         confirmLabel: "Confirm kill all",
@@ -742,34 +803,120 @@ struct PortsSection: View {
                     )
                 }
 
-                ForEach(store.ports) { entry in
-                    VStack(spacing: 0) {
-                        if entry.id != store.ports.first?.id {
-                            Rectangle()
-                                .fill(Theme.hairline)
-                                .frame(height: 1)
-                                .padding(.horizontal, Theme.gutter)
+                if let selectedProject {
+                    PortFilterNote(
+                        project: (selectedProject as NSString).lastPathComponent,
+                        hidden: store.ports.count - visible.reduce(0) { $0 + $1.ports.count },
+                        showAll: $showAll
+                    )
+                }
+
+                if visible.isEmpty {
+                    EmptyState(symbol: "dot.radiowaves.left.and.right", title: "No servers running in this project")
+                }
+
+                ForEach(visible) { group in
+                    PortGroupHeader(
+                        group: group,
+                        onStop: { store.kill(group: group.ports) },
+                        onOpen: group.path.map { path in { onOpenProject(path) } }
+                    )
+                    ForEach(group.ports) { entry in
+                        VStack(spacing: 0) {
+                            if entry.id != group.ports.first?.id {
+                                Rectangle()
+                                    .fill(Theme.hairline)
+                                    .frame(height: 1)
+                                    .padding(.horizontal, Theme.gutter)
+                            }
+                            PortRow(
+                                entry: entry,
+                                location: group.path == nil ? (entry.displayPath ?? entry.processName) : group.subfolder(of: entry),
+                                health: store.health[entry.port] ?? .unknown,
+                                pending: store.pending[entry.port],
+                                onKill: { store.kill(entry) },
+                                onRestart: { store.restart(entry) }
+                            )
                         }
-                        PortRow(
-                            entry: entry,
-                            health: store.health[entry.port] ?? .unknown,
-                            pending: store.pending[entry.port],
-                            onKill: { store.kill(entry) },
-                            onRestart: { store.restart(entry) }
-                        )
+                        .transition(.opacity.combined(with: .offset(y: -4)))
                     }
-                    .transition(.opacity.combined(with: .offset(y: -4)))
                 }
             }
         }
         .animation(reduceMotion ? nil : Motion.reveal, value: store.ports.map(\.port))
         .onAppear { store.startAutoRefresh() }
         .onDisappear { store.stopAutoRefresh() }
+        .onChange(of: selectedProject) { showAll = false }
+    }
+}
+
+private struct PortFilterNote: View {
+    let project: String
+    let hidden: Int
+    @Binding var showAll: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(verbatim: showAll ? "Showing every project" : "Only \(project)\(hidden > 0 ? ". \(hidden) more elsewhere." : "")")
+                .font(.rowSubtitle)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Button(showAll ? "Only \(project)" : "Show all") { showAll.toggle() }
+                .buttonStyle(CapsuleButtonStyle())
+        }
+        .padding(.leading, Theme.gutter)
+        .padding(.trailing, Theme.rowInset + 4)
+        .padding(.bottom, 4)
+    }
+}
+
+private struct PortGroupHeader: View {
+    let group: PortGroup
+    let onStop: () -> Void
+    let onOpen: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: group.path == nil ? "questionmark.folder" : "folder")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(verbatim: group.name)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+            Text(verbatim: "\(group.ports.count)")
+                .font(.rowMeta)
+                .foregroundStyle(.secondary)
+            if let path = group.displayPath {
+                Text(verbatim: path)
+                    .font(.rowMeta)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(Text(verbatim: path))
+            }
+            Spacer(minLength: 6)
+            if let onOpen {
+                IconButton(systemName: "slider.horizontal.3", help: "Tools for this project", action: onOpen)
+                    .accessibilityLabel("Tools for \(group.name)")
+            }
+            TwoStepConfirmButton(
+                idleLabel: "Stop all",
+                confirmLabel: "Confirm stop",
+                systemImage: "xmark",
+                action: onStop
+            )
+        }
+        .padding(.leading, Theme.gutter)
+        .padding(.trailing, Theme.rowInset + 4)
+        .padding(.top, 12)
+        .padding(.bottom, 2)
     }
 }
 
 struct PortRow: View {
     let entry: PortEntry
+    /// Subfolder within the group's project. The group header already names the project.
+    var location: String?
     let health: PortHealth
     let pending: PortsStore.PendingAction?
     let onKill: () -> Void
@@ -800,16 +947,18 @@ struct PortRow: View {
                     }
                 }
 
-                Text(verbatim: entry.displayPath ?? entry.projectName ?? entry.processName)
-                    .font(.rowSubtitle)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(Text(verbatim: entry.cwd ?? ""))
+                if let location {
+                    Text(verbatim: location)
+                        .font(.rowSubtitle)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(Text(verbatim: entry.cwd ?? ""))
+                }
 
                 Text(verbatim: meta)
                     .font(.rowMeta)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 

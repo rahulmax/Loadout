@@ -32,688 +32,6 @@ struct LoadoutApp: App {
     }
 }
 
-// MARK: - Models
-
-struct InstalledPlugin: Identifiable, Hashable {
-    var id: String { fullId }
-    let fullId: String
-    let name: String
-    let marketplace: String
-    let version: String
-    let installPath: String
-    var enabled: Bool
-}
-
-enum SkillOverride: String, CaseIterable, Identifiable {
-    case on
-    case nameOnly = "name-only"
-    case userInvocableOnly = "user-invocable-only"
-    case off
-
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .on: return "On"
-        case .nameOnly: return "Name only"
-        case .userInvocableOnly: return "Slash only"
-        case .off: return "Off"
-        }
-    }
-    var symbol: String {
-        switch self {
-        case .on: return "checkmark.circle.fill"
-        case .nameOnly: return "text.alignleft"
-        case .userInvocableOnly: return "slash.circle"
-        case .off: return "xmark.circle"
-        }
-    }
-}
-
-/// Why a skill's state can't be set from user settings. Mirrors Claude Code's `locked_by`.
-enum SkillLock: Hashable {
-    /// Plugin skills ignore `skillOverrides`; only the plugin switch drops them.
-    case plugin
-    /// The skill sets `disable-model-invocation`, so it is slash-only unless turned off.
-    case author
-}
-
-struct DiscoveredSkill: Identifiable, Hashable {
-    var id: String { key }
-    let key: String              // "compose" or "impeccable:polish"
-    let displayName: String
-    let source: String           // "user" or plugin name
-    let pluginEnabled: Bool       // if false, the skill is dormant regardless of override
-    let lock: SkillLock?
-}
-
-/// A project whose own settings give a skill a different state than the global one.
-struct ProjectOverride: Hashable {
-    let project: String          // folder name
-    let state: SkillOverride
-}
-
-struct LocalMCPServer: Identifiable, Hashable {
-    var id: String { name }
-    let name: String
-    let kind: String              // stdio, http, sse
-    let summary: String           // command or url, truncated
-    var enabled: Bool
-    var offInProjects: [String] = []
-}
-
-struct ClaudeAiIntegration: Identifiable, Hashable {
-    var id: String { name }
-    let name: String              // "Gmail", "Slack", "Google Drive", etc.
-    let url: String
-    let status: String            // "Connected", "Needs authentication", etc.
-    var denied: Bool
-    var offInProjects: [String] = []
-}
-
-// MARK: - Store
-
-@MainActor
-final class AppStore: ObservableObject {
-    @Published private(set) var plugins: [InstalledPlugin] = []
-    @Published private(set) var skills: [DiscoveredSkill] = []
-    @Published private(set) var skillOverrides: [String: SkillOverride] = [:]
-    /// `plugin:skill` keys in `skillOverrides`. Claude Code never reads them.
-    @Published private(set) var deadOverrideKeys: [String] = []
-    /// User skill key → projects whose own settings give it a different state.
-    @Published private(set) var skillProjectOverrides: [String: [ProjectOverride]] = [:]
-    @Published private(set) var mcpServers: [LocalMCPServer] = []
-    /// Server name → folders where `/mcp` turned it off for that project only.
-    @Published private(set) var mcpProjectDisables: [String: [String]] = [:]
-    @Published private(set) var claudeAiIntegrations: [ClaudeAiIntegration] = []
-    @Published private(set) var loadingClaudeAi: Bool = false
-    @Published private(set) var lastError: String?
-    /// True for a few seconds after a toggle copies `/reload-plugins`; drives the footer confirmation.
-    @Published private(set) var justCopied = false
-    private var copiedResetTask: Task<Void, Never>?
-
-    private let home: URL
-    /// Set for snapshot runs: every write throws, so rendering can never touch real config.
-    private let readOnly: Bool
-    private var installedUrl: URL { home.appendingPathComponent(".claude/plugins/installed_plugins.json") }
-    private var settingsUrl: URL { home.appendingPathComponent(".claude/settings.json") }
-    private var claudeJsonUrl: URL { home.appendingPathComponent(".claude.json") }
-    private var userSkillsDir: URL { home.appendingPathComponent(".claude/skills") }
-
-    /// Projects whose settings are read per reload, to flag overrides. Keeps a huge
-    /// `~/.claude.json` history from slowing the panel down.
-    private static let projectScanLimit = 200
-
-    init(home: URL = AppStore.defaultHome, readOnly: Bool = AppStore.isSnapshotRun) {
-        self.home = home
-        self.readOnly = readOnly
-        migrateParkedServers()
-        reload()
-    }
-
-    /// Debug builds can point the store at a fixture folder with `LOADOUT_HOME`.
-    nonisolated static var defaultHome: URL {
-        #if DEBUG
-        if let path = ProcessInfo.processInfo.environment["LOADOUT_HOME"] {
-            return URL(fileURLWithPath: path)
-        }
-        #endif
-        return FileManager.default.homeDirectoryForCurrentUser
-    }
-
-    nonisolated static var isSnapshotRun: Bool {
-        #if DEBUG
-        return ProcessInfo.processInfo.environment["LOADOUT_SNAPSHOT"] != nil
-        #else
-        return false
-        #endif
-    }
-
-    func reload() {
-        do {
-            try loadPlugins()
-            try loadSkills()
-            try loadMCPs()
-            applyDenyStateToClaudeAi()
-            lastError = nil
-        } catch {
-            lastError = "Read failed: \(error.localizedDescription)"
-        }
-        Task { await loadClaudeAiInventory() }
-    }
-
-    // MARK: Plugins
-
-    private func loadPlugins() throws {
-        let installedJson = try readJSON(installedUrl)
-        let pluginsMap = installedJson["plugins"] as? [String: [[String: Any]]] ?? [:]
-        let settingsJson = try readJSON(settingsUrl)
-        let enabledMap = settingsJson["enabledPlugins"] as? [String: Bool] ?? [:]
-
-        plugins = pluginsMap.compactMap { (fullId, entries) -> InstalledPlugin? in
-            guard let entry = entries.first else { return nil }
-            let parts = fullId.split(separator: "@", maxSplits: 1)
-            return InstalledPlugin(
-                fullId: fullId,
-                name: String(parts.first ?? Substring(fullId)),
-                marketplace: parts.count > 1 ? String(parts[1]) : "",
-                version: entry["version"] as? String ?? "unknown",
-                installPath: entry["installPath"] as? String ?? "",
-                enabled: enabledMap[fullId] ?? true
-            )
-        }.sorted { $0.name.lowercased() < $1.name.lowercased() }
-    }
-
-    func togglePlugin(_ plugin: InstalledPlugin) {
-        let newValue = !plugin.enabled
-        do {
-            try writeSettings { json in
-                var map = json["enabledPlugins"] as? [String: Bool] ?? [:]
-                map[plugin.fullId] = newValue
-                json["enabledPlugins"] = map
-            }
-            markToggled()
-            reload()
-        } catch {
-            lastError = "Could not toggle plugin: \(error.localizedDescription)"
-        }
-    }
-
-    // MARK: Skills
-
-    private func loadSkills() throws {
-        let settings = try readJSON(settingsUrl)
-        let overrides = settings["skillOverrides"] as? [String: String] ?? [:]
-        skillOverrides = overrides.compactMapValues { SkillOverride(rawValue: $0) }
-        deadOverrideKeys = overrides.keys.filter { $0.contains(":") }.sorted()
-
-        var found: [DiscoveredSkill] = []
-
-        // user-level
-        if let entries = try? FileManager.default.contentsOfDirectory(
-            at: userSkillsDir, includingPropertiesForKeys: [.isDirectoryKey]
-        ) {
-            for url in entries {
-                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                guard isDir,
-                      FileManager.default.fileExists(atPath: url.appendingPathComponent("SKILL.md").path)
-                else { continue }
-                // Claude Code keys user skills by folder name, not the frontmatter `name`.
-                let name = url.lastPathComponent
-                let skillFile = url.appendingPathComponent("SKILL.md")
-                found.append(DiscoveredSkill(
-                    key: name,
-                    displayName: name,
-                    source: "user",
-                    pluginEnabled: true,
-                    lock: disablesModelInvocation(skillFile) ? .author : nil
-                ))
-            }
-        }
-
-        // plugin-bundled
-        for plugin in plugins {
-            let skillsDir = URL(fileURLWithPath: plugin.installPath).appendingPathComponent("skills")
-            guard let entries = try? FileManager.default.contentsOfDirectory(
-                at: skillsDir, includingPropertiesForKeys: [.isDirectoryKey]
-            ) else { continue }
-            for url in entries {
-                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                guard isDir,
-                      FileManager.default.fileExists(atPath: url.appendingPathComponent("SKILL.md").path)
-                else { continue }
-                let skillName = url.lastPathComponent
-                let key = "\(plugin.name):\(skillName)"
-                found.append(DiscoveredSkill(
-                    key: key,
-                    displayName: skillName,
-                    source: plugin.name,
-                    pluginEnabled: plugin.enabled,
-                    lock: .plugin
-                ))
-            }
-        }
-
-        skills = found.sorted {
-            ($0.source.lowercased(), $0.displayName.lowercased())
-                < ($1.source.lowercased(), $1.displayName.lowercased())
-        }
-        skillProjectOverrides = loadSkillProjectOverrides(userSkills: found.filter { $0.lock != .plugin })
-    }
-
-    /// True when SKILL.md frontmatter sets `disable-model-invocation: true`.
-    private func disablesModelInvocation(_ file: URL) -> Bool {
-        guard let text = try? String(contentsOf: file, encoding: .utf8),
-              text.hasPrefix("---") else { return false }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed == "---" { break }
-            let parts = trimmed.split(separator: ":", maxSplits: 1)
-            if parts.count == 2,
-               parts[0].trimmingCharacters(in: .whitespaces) == "disable-model-invocation" {
-                return parts[1].trimmingCharacters(in: .whitespaces).lowercased() == "true"
-            }
-        }
-        return false
-    }
-
-    /// Project folders Claude Code has opened, from `~/.claude.json`, by path.
-    private func knownProjects(_ claudeJson: [String: Any]) -> [(path: String, config: [String: Any])] {
-        let projects = claudeJson["projects"] as? [String: [String: Any]] ?? [:]
-        return projects
-            .sorted { $0.key < $1.key }
-            .prefix(Self.projectScanLimit)
-            .map { (path: $0.key, config: $0.value) }
-    }
-
-    /// For each user skill, the projects whose settings.json or settings.local.json give it
-    /// a state other than the global one. Claude Code applies local > project > user.
-    private func loadSkillProjectOverrides(userSkills: [DiscoveredSkill]) -> [String: [ProjectOverride]] {
-        guard let claudeJson = try? readJSON(claudeJsonUrl) else { return [:] }
-        var result: [String: [ProjectOverride]] = [:]
-        for project in knownProjects(claudeJson) {
-            let dir = URL(fileURLWithPath: project.path).appendingPathComponent(".claude")
-            // In the home folder, .claude/settings.json is the user file itself.
-            let isHome = URL(fileURLWithPath: project.path).standardizedFileURL == home.standardizedFileURL
-            let shared = isHome ? [:] : projectSkillOverrides(dir.appendingPathComponent("settings.json"))
-            let local = projectSkillOverrides(dir.appendingPathComponent("settings.local.json"))
-            guard !shared.isEmpty || !local.isEmpty else { continue }
-            let folder = URL(fileURLWithPath: project.path).lastPathComponent
-            for skill in userSkills {
-                guard let state = local[skill.key] ?? shared[skill.key],
-                      state != (skillOverrides[skill.key] ?? .on) else { continue }
-                result[skill.key, default: []].append(ProjectOverride(project: folder, state: state))
-            }
-        }
-        return result
-    }
-
-    private func projectSkillOverrides(_ url: URL) -> [String: SkillOverride] {
-        guard FileManager.default.fileExists(atPath: url.path),
-              let json = try? readJSON(url),
-              let map = json["skillOverrides"] as? [String: String] else { return [:] }
-        return map.compactMapValues { SkillOverride(rawValue: $0) }
-    }
-
-    /// The state Claude Code resolves from user settings: author-locked skills are slash-only
-    /// unless turned off. Plugin skills are always on while their plugin is.
-    func effectiveState(_ skill: DiscoveredSkill) -> SkillOverride {
-        let stored = skillOverrides[skill.key] ?? .on
-        switch skill.lock {
-        case .plugin: return .on
-        case .author: return stored == .off ? .off : .userInvocableOnly
-        case nil: return stored
-        }
-    }
-
-    func setSkillOverride(_ skill: DiscoveredSkill, to value: SkillOverride) {
-        guard skill.lock != .plugin else { return }
-        // An author-locked skill is already slash-only; the only real choice is Off.
-        let value: SkillOverride = skill.lock == .author && value != .off ? .on : value
-        do {
-            try writeSettings { json in
-                var map = json["skillOverrides"] as? [String: String] ?? [:]
-                if value == .on {
-                    map.removeValue(forKey: skill.key)
-                } else {
-                    map[skill.key] = value.rawValue
-                }
-                if map.isEmpty {
-                    json.removeValue(forKey: "skillOverrides")
-                } else {
-                    json["skillOverrides"] = map
-                }
-            }
-            markToggled()
-            reload()
-        } catch {
-            lastError = "Could not update skill: \(error.localizedDescription)"
-        }
-    }
-
-    /// Sets every user skill to `off` in a single settings write. Plugin skills are
-    /// skipped: Claude Code ignores overrides for them.
-    func turnOffAllSkills() {
-        let targets = skills.filter { $0.lock != .plugin }
-        guard !targets.isEmpty else { return }
-        do {
-            try writeSettings { json in
-                var map = json["skillOverrides"] as? [String: String] ?? [:]
-                for skill in targets {
-                    map[skill.key] = SkillOverride.off.rawValue
-                }
-                json["skillOverrides"] = map
-            }
-            markToggled()
-            reload()
-        } catch {
-            lastError = "Could not turn off skills: \(error.localizedDescription)"
-        }
-    }
-
-    /// Removes the `plugin:skill` keys earlier versions wrote. They never had an effect.
-    func removeDeadOverrides() {
-        let dead = Set(deadOverrideKeys)
-        guard !dead.isEmpty else { return }
-        do {
-            try writeSettings { json in
-                var map = json["skillOverrides"] as? [String: String] ?? [:]
-                map = map.filter { !dead.contains($0.key) }
-                if map.isEmpty {
-                    json.removeValue(forKey: "skillOverrides")
-                } else {
-                    json["skillOverrides"] = map
-                }
-            }
-            reload()
-        } catch {
-            lastError = "Could not clean up overrides: \(error.localizedDescription)"
-        }
-    }
-
-    // MARK: Local MCP servers
-
-    /// A local server is off when `deniedMcpServers` names it. Its config stays in
-    /// `mcpServers`, so Loadout never has to write `~/.claude.json` to toggle it.
-    private func loadMCPs() throws {
-        let claudeJson = try readJSON(claudeJsonUrl)
-        let active = claudeJson["mcpServers"] as? [String: [String: Any]] ?? [:]
-        // Parked by Loadout before 1.1; only still here in a read-only run.
-        let parked = claudeJson["_disabledMcpServers"] as? [String: [String: Any]] ?? [:]
-        let deniedNames = readDenyNames()
-
-        var found: [LocalMCPServer] = []
-        for (name, cfg) in active {
-            found.append(makeServer(name: name, cfg: cfg, enabled: !deniedNames.contains(name)))
-        }
-        for (name, cfg) in parked where active[name] == nil {
-            found.append(makeServer(name: name, cfg: cfg, enabled: false))
-        }
-        mcpProjectDisables = loadMcpProjectDisables(claudeJson)
-        mcpServers = found
-            .map { server in
-                var server = server
-                server.offInProjects = mcpProjectDisables[server.name] ?? []
-                return server
-            }
-            .sorted { $0.name.lowercased() < $1.name.lowercased() }
-    }
-
-    /// Server name → folders where `/mcp` turned it off (`projects[path].disabledMcpServers`).
-    private func loadMcpProjectDisables(_ claudeJson: [String: Any]) -> [String: [String]] {
-        var result: [String: [String]] = [:]
-        for project in knownProjects(claudeJson) {
-            let folder = URL(fileURLWithPath: project.path).lastPathComponent
-            for name in project.config["disabledMcpServers"] as? [String] ?? [] {
-                result[name, default: []].append(folder)
-            }
-        }
-        return result
-    }
-
-    /// One-time move off the old `_disabledMcpServers` parking lot: deny each parked
-    /// server by name first, then put its config back. If the second write fails the
-    /// server is still blocked. Backs up `~/.claude.json` once before touching it.
-    private func migrateParkedServers() {
-        guard !readOnly,
-              let claudeJson = try? readJSON(claudeJsonUrl),
-              let parked = claudeJson["_disabledMcpServers"] as? [String: Any]
-        else { return }
-        do {
-            let backup = home.appendingPathComponent(".claude.json.loadout-backup")
-            if !FileManager.default.fileExists(atPath: backup.path) {
-                try FileManager.default.copyItem(at: claudeJsonUrl, to: backup)
-            }
-            if !parked.isEmpty {
-                try updateDenyList { deny in
-                    for name in parked.keys.sorted()
-                    where !deny.contains(where: { ($0["serverName"] as? String) == name }) {
-                        deny.append(["serverName": name])
-                    }
-                }
-            }
-            try writeClaudeJson { json in
-                var active = json["mcpServers"] as? [String: Any] ?? [:]
-                let stillParked = json["_disabledMcpServers"] as? [String: Any] ?? [:]
-                for (name, cfg) in stillParked where active[name] == nil {
-                    active[name] = cfg
-                }
-                json["mcpServers"] = active
-                json.removeValue(forKey: "_disabledMcpServers")
-            }
-        } catch {
-            lastError = "Could not migrate parked MCP servers: \(error.localizedDescription)"
-        }
-    }
-
-    private func makeServer(name: String, cfg: [String: Any], enabled: Bool) -> LocalMCPServer {
-        let kind = cfg["type"] as? String ?? "stdio"
-        let summary: String
-        if let url = cfg["url"] as? String {
-            summary = url
-        } else if let cmd = cfg["command"] as? String {
-            let args = (cfg["args"] as? [String])?.joined(separator: " ") ?? ""
-            summary = (cmd + " " + args).trimmingCharacters(in: .whitespaces)
-        } else {
-            summary = ""
-        }
-        return LocalMCPServer(name: name, kind: kind, summary: summary, enabled: enabled)
-    }
-
-    // MARK: claude.ai integrations
-
-    static let claudeAiCatalog: [(name: String, url: String)] = [
-        ("Gmail", "https://gmailmcp.googleapis.com/mcp/v1"),
-        ("Google Calendar", "https://calendarmcp.googleapis.com/mcp/v1"),
-        ("Google Drive", "https://drivemcp.googleapis.com/mcp/v1"),
-        ("Slack", "https://mcp.slack.com/mcp"),
-        ("Miro", "https://mcp.miro.com"),
-        ("Figma", "https://mcp.figma.com/mcp"),
-    ]
-
-    func loadClaudeAiInventory() async {
-        loadingClaudeAi = true
-        let entries = await Task.detached { runClaudeMcpList() }.value
-        let denyUrls = readDenyUrls()
-
-        var statusByUrl: [String: String] = [:]
-        for entry in entries where entry.name.hasPrefix("claude.ai ") {
-            statusByUrl[entry.url] = entry.status
-        }
-
-        claudeAiIntegrations = AppStore.claudeAiCatalog.map { item in
-            let denied = denyUrls.contains(item.url)
-            let status: String
-            if denied {
-                status = "Blocked locally"
-            } else if let s = statusByUrl[item.url] {
-                status = s
-            } else {
-                status = "Not connected"
-            }
-            return ClaudeAiIntegration(
-                name: item.name, url: item.url, status: status, denied: denied,
-                offInProjects: mcpProjectDisables["claude.ai \(item.name)"] ?? []
-            )
-        }
-        .sorted { $0.name.lowercased() < $1.name.lowercased() }
-        loadingClaudeAi = false
-    }
-
-    private func applyDenyStateToClaudeAi() {
-        let denyUrls = readDenyUrls()
-        claudeAiIntegrations = claudeAiIntegrations.map { entry in
-            var updated = entry
-            updated.denied = denyUrls.contains(entry.url)
-            updated.offInProjects = mcpProjectDisables["claude.ai \(entry.name)"] ?? []
-            return updated
-        }
-    }
-
-    // MARK: deniedMcpServers
-
-    /// Entries take exactly one of `serverName`, `serverUrl` or `serverCommand`, matched
-    /// verbatim. Loadout writes the first two and leaves any other entry alone.
-    private func readDenyEntries() -> [[String: Any]] {
-        guard let json = try? readJSON(settingsUrl) else { return [] }
-        return json["deniedMcpServers"] as? [[String: Any]] ?? []
-    }
-
-    private func readDenyUrls() -> Set<String> {
-        Set(readDenyEntries().compactMap { $0["serverUrl"] as? String })
-    }
-
-    private func readDenyNames() -> Set<String> {
-        Set(readDenyEntries().compactMap { $0["serverName"] as? String })
-    }
-
-    private func updateDenyList(_ mutate: (inout [[String: Any]]) -> Void) throws {
-        try writeSettings { json in
-            var deny = json["deniedMcpServers"] as? [[String: Any]] ?? []
-            mutate(&deny)
-            if deny.isEmpty {
-                json.removeValue(forKey: "deniedMcpServers")
-            } else {
-                json["deniedMcpServers"] = deny
-            }
-        }
-    }
-
-    func toggleClaudeAiIntegration(_ integration: ClaudeAiIntegration) {
-        do {
-            try updateDenyList { deny in
-                if integration.denied {
-                    deny.removeAll { ($0["serverUrl"] as? String) == integration.url }
-                } else {
-                    deny.append(["serverUrl": integration.url])
-                }
-            }
-            markToggled()
-            applyDenyStateToClaudeAi()
-        } catch {
-            lastError = "Could not toggle integration: \(error.localizedDescription)"
-        }
-    }
-
-    func toggleMCPServer(_ server: LocalMCPServer) {
-        do {
-            try updateDenyList { deny in
-                if server.enabled {
-                    deny.append(["serverName": server.name])
-                } else {
-                    deny.removeAll { ($0["serverName"] as? String) == server.name }
-                }
-            }
-            markToggled()
-            reload()
-        } catch {
-            lastError = "Could not toggle MCP server: \(error.localizedDescription)"
-        }
-    }
-
-    // MARK: Helpers
-
-    private func markToggled() {
-        copyReloadCommand()
-        justCopied = true
-        copiedResetTask?.cancel()
-        copiedResetTask = Task {
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if !Task.isCancelled { justCopied = false }
-        }
-    }
-
-    private func readJSON(_ url: URL) throws -> [String: Any] {
-        let data = try Data(contentsOf: url)
-        return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-    }
-
-    private func writeSettings(_ mutate: (inout [String: Any]) -> Void) throws {
-        try mutateJSON(at: settingsUrl, mutate: mutate)
-    }
-
-    private func writeClaudeJson(_ mutate: (inout [String: Any]) -> Void) throws {
-        try mutateJSON(at: claudeJsonUrl, mutate: mutate)
-    }
-
-    private func mutateJSON(at url: URL, mutate: (inout [String: Any]) -> Void) throws {
-        guard !readOnly else {
-            throw NSError(domain: "Loadout", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "Read-only run: not writing \(url.lastPathComponent)"])
-        }
-        let data = try Data(contentsOf: url)
-        guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw NSError(domain: "Loadout", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Not a JSON object: \(url.lastPathComponent)"])
-        }
-        mutate(&json)
-        let newData = try JSONSerialization.data(
-            withJSONObject: json,
-            options: [.prettyPrinted, .sortedKeys]
-        )
-        let tmp = url.appendingPathExtension("tmp")
-        try newData.write(to: tmp, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-    }
-}
-
-func copyReloadCommand() {
-    let pb = NSPasteboard.general
-    pb.clearContents()
-    pb.setString("/reload-plugins", forType: .string)
-}
-
-struct ParsedMcpEntry {
-    let name: String
-    let url: String
-    let status: String
-}
-
-func runClaudeMcpList() -> [ParsedMcpEntry] {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-    p.arguments = ["-lc", "claude mcp list"]
-    let outPipe = Pipe()
-    p.standardOutput = outPipe
-    p.standardError = FileHandle.nullDevice
-    do {
-        try p.run()
-    } catch {
-        return []
-    }
-    // Read before waiting, so a long listing can't fill the pipe and hang the child.
-    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-    p.waitUntilExit()
-    let text = String(data: data, encoding: .utf8) ?? ""
-    return parseMcpList(text)
-}
-
-func parseMcpList(_ text: String) -> [ParsedMcpEntry] {
-    var result: [ParsedMcpEntry] = []
-    for rawLine in text.split(separator: "\n") {
-        let line = String(rawLine).trimmingCharacters(in: .whitespaces)
-        guard !line.isEmpty,
-              !line.lowercased().contains("checking mcp"),
-              line.contains(": ")
-        else { continue }
-        // Find the LAST " - " (status separator) — URLs may contain dashes
-        guard let dashRange = line.range(of: " - ", options: .backwards) else { continue }
-        let beforeDash = String(line[..<dashRange.lowerBound])
-        let rawStatus = String(line[dashRange.upperBound...])
-        let status = rawStatus
-            .replacingOccurrences(of: "✓ ", with: "")
-            .replacingOccurrences(of: "! ", with: "")
-            .replacingOccurrences(of: "✘ ", with: "")
-            .replacingOccurrences(of: "✗ ", with: "")
-            .trimmingCharacters(in: .whitespaces)
-
-        guard let colonRange = beforeDash.range(of: ": ") else { continue }
-        let name = String(beforeDash[..<colonRange.lowerBound]).trimmingCharacters(in: .whitespaces)
-        let details = String(beforeDash[colonRange.upperBound...]).trimmingCharacters(in: .whitespaces)
-        result.append(ParsedMcpEntry(name: name, url: details, status: status))
-    }
-    return result
-}
-
 // MARK: - Design system
 
 /// Tokens shared by every tab. Brand blue comes from the app icon (Carbon blue 60 in
@@ -934,9 +252,9 @@ struct SectionLabel: View {
         HStack(spacing: 6) {
             Text(title.uppercased())
                 .tracking(0.6)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             if let count {
-                Text(verbatim: "\(count)").foregroundStyle(.quaternary)
+                Text(verbatim: "\(count)").foregroundStyle(.secondary)
             }
         }
         .font(.sectionLabel)
@@ -992,7 +310,7 @@ struct EmptyState: View {
             if let message {
                 Text(verbatim: message)
                     .font(.rowSubtitle)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1028,10 +346,12 @@ struct StatusDot: View {
 }
 
 struct LoadoutSwitch: View {
+    /// Read out by VoiceOver. The label is hidden visually: the row already shows it.
+    let label: String
     let isOn: Bool
     let onToggle: () -> Void
     var body: some View {
-        Toggle("", isOn: Binding(get: { isOn }, set: { _ in onToggle() }))
+        Toggle(label, isOn: Binding(get: { isOn }, set: { _ in onToggle() }))
             .toggleStyle(.switch)
             .labelsHidden()
             .controlSize(.mini)
@@ -1045,6 +365,9 @@ struct MenuView: View {
     @ObservedObject var store: AppStore
     @StateObject private var portsStore = PortsStore()
     @State private var tab: Tab
+    @State private var picking = false
+    @State private var namingPreset = false
+    @State private var presetName = ""
     @State private var refreshSpins = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let fixedHeight: CGFloat?
@@ -1057,16 +380,14 @@ struct MenuView: View {
 
     enum Tab: String, CaseIterable, Identifiable {
         case ports = "Ports"
-        case plugins = "Plugins"
+        case tools = "Tools"
         case skills = "Skills"
-        case mcps = "MCP"
         var id: String { rawValue }
         var symbol: String {
             switch self {
             case .ports: return "dot.radiowaves.left.and.right"
-            case .plugins: return "puzzlepiece.extension"
+            case .tools: return "puzzlepiece.extension"
             case .skills: return "sparkles"
-            case .mcps: return "server.rack"
             }
         }
     }
@@ -1074,39 +395,63 @@ struct MenuView: View {
     private func count(for tab: Tab) -> Int {
         switch tab {
         case .ports: return portsStore.ports.count
-        case .plugins: return store.plugins.count
-        case .skills: return store.skills.count
-        case .mcps: return store.mcpServers.count + store.claudeAiIntegrations.count
+        case .tools: return store.inventory.services.count
+        case .skills: return store.inventory.skills.count
         }
+    }
+
+    private var knownProjectPaths: [String] {
+        var paths = store.projects.map(\.path)
+        if let selected = store.scope.projectPath, !paths.contains(selected) { paths.append(selected) }
+        return paths
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            ScopeBar(store: store, picking: $picking)
 
-            TabBar(selection: $tab, count: count(for:))
-                .padding(.horizontal, Theme.rowInset)
-                .padding(.bottom, 10)
+            if picking {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+                ProjectPicker(store: store, onClose: { picking = false })
+                    .frame(maxHeight: .infinity)
+            } else {
+                if namingPreset { presetNameRow }
 
-            if let error = store.lastError {
-                ErrorBanner(message: error)
-            }
+                TabBar(selection: $tab, count: count(for:))
+                    .padding(.horizontal, Theme.rowInset)
+                    .padding(.bottom, 10)
 
-            Rectangle().fill(Theme.hairline).frame(height: 1)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    switch tab {
-                    case .ports: PortsSection(store: portsStore)
-                    case .plugins: PluginsSection(store: store)
-                    case .skills: SkillsSection(store: store)
-                    case .mcps: MCPsSection(store: store)
-                    }
+                if let error = store.lastError {
+                    ErrorBanner(message: error)
                 }
-                .padding(.bottom, 8)
+
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        switch tab {
+                        case .ports:
+                            PortsSection(
+                                store: portsStore,
+                                knownProjects: knownProjectPaths,
+                                selectedProject: store.scope.projectPath,
+                                onOpenProject: { path in
+                                    store.select(.project(path))
+                                    tab = .tools
+                                }
+                            )
+                        case .tools:
+                            ToolsSection(store: store)
+                        case .skills:
+                            SkillsSection(store: store, onOpenTools: { tab = .tools })
+                        }
+                    }
+                    .padding(.bottom, 8)
+                }
+                .scrollIndicators(.automatic)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .scrollIndicators(.automatic)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Rectangle().fill(Theme.hairline).frame(height: 1)
             footer
@@ -1116,6 +461,9 @@ struct MenuView: View {
             height: fixedHeight ?? min(1100, (NSScreen.main?.visibleFrame.height ?? 1000) - 80)
         )
         .onAppear { portsStore.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            store.panelOpened()
+        }
     }
 
     private var header: some View {
@@ -1123,6 +471,7 @@ struct MenuView: View {
             BrandMark()
             Text("Loadout").font(.panelTitle)
             Spacer()
+            optionsMenu
             IconButton(
                 systemName: "arrow.clockwise",
                 help: "Reload from disk",
@@ -1132,8 +481,10 @@ struct MenuView: View {
                     withAnimation(.timingCurve(0.77, 0, 0.175, 1, duration: 0.6)) { refreshSpins += 1 }
                 }
                 store.reload()
+                store.refreshConnectors()
                 portsStore.refresh()
             }
+            .accessibilityLabel("Reload from disk")
         }
         .padding(.leading, Theme.gutter)
         .padding(.trailing, Theme.rowInset + 2)
@@ -1141,16 +492,80 @@ struct MenuView: View {
         .padding(.bottom, 10)
     }
 
+    private var optionsMenu: some View {
+        Menu {
+            Section("Tools to manage") {
+                ForEach(Harness.allCases) { harness in
+                    Toggle(harness.label, isOn: Binding(
+                        get: { store.managedHarnesses.contains(harness) },
+                        set: { store.setManaged(harness, $0) }
+                    ))
+                    .disabled(harness == .claude)
+                }
+            }
+            Section("Presets") {
+                ForEach(store.state.presets) { preset in
+                    Menu(preset.name) {
+                        Button("Apply to \(store.selectedProject?.name ?? "all projects")") { store.apply(preset) }
+                        Button("Delete") { store.deletePreset(preset) }
+                    }
+                }
+                Button("Save current as preset…") {
+                    picking = false
+                    presetName = ""
+                    namingPreset = true
+                }
+            }
+            if store.inventory.needsMigration {
+                Button("Switch to per-project control") { store.migrate() }
+                    .disabled(!store.canMigrate)
+            }
+            if store.state.migrationBackup != nil {
+                Button("Restore settings from before the switch") { store.restoreBeforeMigration() }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Tools, presets and restore")
+        .accessibilityLabel("Options")
+    }
+
+    private var presetNameRow: some View {
+        HStack(spacing: 8) {
+            TextField("Preset name", text: $presetName)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12))
+                .onSubmit(savePreset)
+            Button("Save", action: savePreset)
+                .buttonStyle(CapsuleButtonStyle())
+                .disabled(presetName.trimmingCharacters(in: .whitespaces).isEmpty)
+            Button("Cancel") { namingPreset = false }
+                .buttonStyle(CapsuleButtonStyle())
+        }
+        .padding(.horizontal, Theme.gutter)
+        .padding(.bottom, 10)
+    }
+
+    private func savePreset() {
+        store.savePreset(named: presetName)
+        namingPreset = false
+    }
+
     private var footer: some View {
         HStack(spacing: 7) {
             ZStack {
-                if store.justCopied {
+                if store.note != nil {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .transition(.iconSwap)
                 } else {
                     Image(systemName: "doc.on.clipboard")
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                         .transition(.iconSwap)
                 }
             }
@@ -1158,12 +573,21 @@ struct MenuView: View {
             .frame(width: 14)
 
             ZStack(alignment: .leading) {
-                if store.justCopied {
-                    HStack(spacing: 4) {
-                        Text("Copied")
-                        CodeChip(text: "/reload-plugins")
-                        Text("· paste in Claude")
+                if let note = store.note {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(verbatim: note.text)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(note.text)
+                        if note.copiedReload {
+                            HStack(spacing: 4) {
+                                Text("Paste")
+                                CodeChip(text: "/reload-plugins")
+                                Text("in open sessions")
+                            }
+                        }
                     }
+                    .id(note.id)
                     .transition(.textSwap)
                 } else {
                     HStack(spacing: 4) {
@@ -1178,12 +602,17 @@ struct MenuView: View {
 
             Spacer(minLength: 8)
 
+            if store.canUndo {
+                Button("Undo") { store.undo() }
+                    .buttonStyle(CapsuleButtonStyle())
+                    .keyboardShortcut("z")
+            }
             QuitButton()
         }
-        .animation(reduceMotion ? nil : Motion.reveal, value: store.justCopied)
+        .animation(reduceMotion ? nil : Motion.reveal, value: store.note)
         .padding(.leading, Theme.gutter)
         .padding(.trailing, Theme.rowInset + 2)
-        .frame(height: 40)
+        .frame(height: 44)
     }
 }
 
@@ -1210,7 +639,7 @@ struct TabBar: View {
                         Text(verbatim: "\(count(item))")
                             .font(.system(size: 11, weight: .medium))
                             .monospacedDigit()
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                     }
                     .foregroundStyle(selected ? .primary : .secondary)
                     .frame(maxWidth: .infinity)
@@ -1247,7 +676,7 @@ struct QuitButton: View {
         } label: {
             HStack(spacing: 5) {
                 Text("Quit").foregroundStyle(hovering ? .primary : .secondary)
-                Text("⌘Q").foregroundStyle(.tertiary)
+                Text("⌘Q").foregroundStyle(.secondary)
             }
             .font(.control)
             .padding(.horizontal, 8)
@@ -1288,523 +717,12 @@ struct ErrorBanner: View {
     }
 }
 
-struct PluginsSection: View {
-    @ObservedObject var store: AppStore
-
-    var body: some View {
-        if store.plugins.isEmpty {
-            EmptyState(
-                symbol: "puzzlepiece.extension",
-                title: "No plugins installed",
-                message: "Install one with /plugin in Claude Code."
-            )
-        } else {
-            let enabled = store.plugins.filter(\.enabled).count
-            ListToolbar(summary: "\(enabled) of \(store.plugins.count) enabled")
-            ForEach(store.plugins) { plugin in
-                PluginRow(plugin: plugin) { store.togglePlugin(plugin) }
-            }
-        }
-    }
-}
-
-struct PluginRow: View {
-    let plugin: InstalledPlugin
-    let onToggle: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Tile(glyph: .monogram(Tile.monogram(for: plugin.name)), tint: Tile.tint(for: plugin.name), dimmed: !plugin.enabled)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(verbatim: plugin.name)
-                    .font(.rowTitle)
-                    .foregroundStyle(plugin.enabled ? .primary : .secondary)
-                    .lineLimit(1)
-                Text(verbatim: "\(plugin.version) · \(plugin.marketplace)")
-                    .font(.rowSubtitle)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer(minLength: 8)
-            LoadoutSwitch(isOn: plugin.enabled, onToggle: onToggle)
-        }
-        .rowChrome()
-    }
-}
-
-struct SkillsSection: View {
-    @ObservedObject var store: AppStore
-
-    private var userSkills: [DiscoveredSkill] {
-        store.skills.filter { $0.lock != .plugin }
-    }
-
-    private var pluginGroups: [(name: String, skills: [DiscoveredSkill])] {
-        let pluginSkills = store.skills.filter { $0.lock == .plugin }
-        let grouped = Dictionary(grouping: pluginSkills) { $0.source }
-        return grouped.keys
-            .sorted { $0.lowercased() < $1.lowercased() }
-            .map { (name: $0, skills: grouped[$0] ?? []) }
-    }
-
-    /// "12 on · 3 trimmed · 8 off · 20 from plugins", skipping empty buckets.
-    /// Plugin skills follow their plugin, so they get their own bucket.
-    private var summary: String {
-        var on = 0, trimmed = 0, off = 0
-        for skill in userSkills {
-            switch store.effectiveState(skill) {
-            case .on: on += 1
-            case .nameOnly, .userInvocableOnly: trimmed += 1
-            case .off: off += 1
-            }
-        }
-        let fromPlugins = store.skills.count - userSkills.count
-        let parts = [(on, "on"), (trimmed, "trimmed"), (off, "off"), (fromPlugins, "from plugins")]
-            .filter { $0.0 > 0 }
-            .map { "\($0.0) \($0.1)" }
-        return parts.joined(separator: " · ")
-    }
-
-    var body: some View {
-        if store.skills.isEmpty {
-            EmptyState(
-                symbol: "sparkles",
-                title: "No skills found",
-                message: "Skills live in ~/.claude/skills or inside installed plugins."
-            )
-        } else {
-            ListToolbar(summary: summary) {
-                if !userSkills.isEmpty {
-                    TwoStepConfirmButton(
-                        idleLabel: "Turn all off",
-                        confirmLabel: "Confirm",
-                        systemImage: "power",
-                        action: { store.turnOffAllSkills() }
-                    )
-                }
-            }
-
-            if !userSkills.isEmpty {
-                SectionLabel(title: "User", count: userSkills.count)
-                ForEach(userSkills) { skill in
-                    SkillRow(
-                        skill: skill,
-                        current: store.effectiveState(skill),
-                        projects: store.skillProjectOverrides[skill.key] ?? [],
-                        onPick: { store.setSkillOverride(skill, to: $0) }
-                    )
-                }
-            }
-
-            if !pluginGroups.isEmpty {
-                SectionLabel(title: "Plugins", count: pluginGroups.count)
-                ForEach(pluginGroups, id: \.name) { group in
-                    PluginSkillGroup(name: group.name, skills: group.skills)
-                }
-                InlineNote(text: "Plugin skills ignore per-skill settings. Turn the plugin off in Plugins to drop them.")
-            }
-
-            if !store.deadOverrideKeys.isEmpty {
-                DeadOverridesRow(count: store.deadOverrideKeys.count) {
-                    store.removeDeadOverrides()
-                }
-            }
-        }
-    }
-}
-
-/// Leftover `plugin:skill` overrides from earlier versions. Claude Code never reads them.
-struct DeadOverridesRow: View {
-    let count: Int
-    let onRemove: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(verbatim: "\(count) plugin skill \(count == 1 ? "override has" : "overrides have") no effect")
-                .font(.rowSubtitle)
-                .foregroundStyle(.secondary)
-                .help("Claude Code ignores skillOverrides for plugin skills. These keys in settings.json do nothing.")
-            Spacer(minLength: 8)
-            TwoStepConfirmButton(
-                idleLabel: "Remove",
-                confirmLabel: "Confirm",
-                systemImage: "trash",
-                action: onRemove
-            )
-        }
-        .padding(.horizontal, Theme.gutter)
-        .padding(.vertical, 8)
-    }
-}
-
-struct PluginSkillGroup: View {
-    let name: String
-    let skills: [DiscoveredSkill]
-    @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var pluginEnabled: Bool { skills.first?.pluginEnabled ?? true }
-
-    private var detail: String {
-        let noun = skills.count == 1 ? "skill" : "skills"
-        return (pluginEnabled ? "" : "Plugin off · ") + "\(skills.count) \(noun)"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(reduceMotion ? nil : Motion.reveal) { expanded.toggle() }
-            } label: {
-                HStack(spacing: 10) {
-                    Tile(glyph: .monogram(Tile.monogram(for: name)), tint: Tile.tint(for: name), dimmed: !pluginEnabled)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(verbatim: name)
-                            .font(.rowTitle)
-                            .foregroundStyle(pluginEnabled ? .primary : .secondary)
-                            .lineLimit(1)
-                        Text(verbatim: detail)
-                            .font(.rowSubtitle)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                        .padding(.trailing, 4)
-                }
-                .rowChrome()
-            }
-            .buttonStyle(.plain)
-
-            if expanded {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(skills) { skill in
-                        PluginSkillRow(skill: skill)
-                    }
-                }
-                .padding(.bottom, 4)
-                .transition(.opacity.combined(with: .offset(y: -4)))
-            }
-        }
-    }
-}
-
-/// A plugin skill: listed for reference, with no controls. It is on exactly when its plugin is.
-struct PluginSkillRow: View {
-    let skill: DiscoveredSkill
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(verbatim: skill.displayName)
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(skill.pluginEnabled ? .primary : .secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(Text(verbatim: skill.key))
-            Spacer(minLength: 8)
-            Text(skill.pluginEnabled ? "On with plugin" : "Off with plugin")
-                .font(.rowSubtitle)
-                .foregroundStyle(.tertiary)
-                .help("Plugin skills ignore skillOverrides. Use the plugin's switch in Plugins.")
-        }
-        .padding(.leading, 36)
-        .rowChrome(verticalPadding: 5)
-    }
-}
-
-struct SkillRow: View {
-    let skill: DiscoveredSkill
-    let current: SkillOverride
-    var projects: [ProjectOverride] = []
-    let onPick: (SkillOverride) -> Void
-
-    private var allowed: Set<SkillOverride> {
-        skill.lock == .author ? [.userInvocableOnly, .off] : Set(SkillOverride.allCases)
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(verbatim: skill.displayName)
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(current == .off ? .secondary : .primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(Text(verbatim: skill.key))
-            Spacer(minLength: 8)
-            if !projects.isEmpty {
-                ProjectMarker(label: "\(projects.count) \(projects.count == 1 ? "project" : "projects")", detail: projectsDetail)
-            }
-            SkillStateSegments(current: current, allowed: allowed, onPick: onPick)
-        }
-        .animation(Motion.hover, value: current)
-        .rowChrome(verticalPadding: 4)
-    }
-
-    private var projectsDetail: String {
-        let lines = projects.map { "\($0.project): \($0.state.label)" }
-        return "These projects set their own state, which wins over this one:\n" + lines.joined(separator: "\n")
-    }
-}
-
-/// Quiet trailing note that a project's own settings differ, with the list in a tooltip.
-struct ProjectMarker: View {
-    let label: String
-    let detail: String
-
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "folder")
-                .font(.system(size: 9, weight: .semibold))
-            Text(verbatim: label)
-                .font(.rowMeta)
-        }
-        .foregroundStyle(.tertiary)
-        .lineLimit(1)
-        .fixedSize()
-        .help(detail)
-    }
-}
-
-/// Inline four-state segmented control (On / Name / Slash / Off) with a sliding thumb,
-/// so every state is visible and one click away. States outside `allowed` are dimmed.
-struct SkillStateSegments: View {
-    let current: SkillOverride
-    var allowed: Set<SkillOverride> = Set(SkillOverride.allCases)
-    let onPick: (SkillOverride) -> Void
-
-    @Namespace private var thumb
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private func shortLabel(_ state: SkillOverride) -> String {
-        switch state {
-        case .on: return "On"
-        case .nameOnly: return "Name"
-        case .userInvocableOnly: return "Slash"
-        case .off: return "Off"
-        }
-    }
-
-    private func tooltip(_ state: SkillOverride) -> String {
-        if !allowed.contains(state) {
-            return "This skill turns off model use itself, so it can only be Slash or Off"
-        }
-        switch state {
-        case .on: return "On — listed with its description. The body loads only when used"
-        case .nameOnly: return "Name — listed by name only, without the description"
-        case .userInvocableOnly: return "Slash — hidden from the model. You can still type /name"
-        case .off: return "Off — hidden from the model and from /"
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(SkillOverride.allCases) { state in
-                let selected = state == current
-                let enabled = allowed.contains(state)
-                Button {
-                    onPick(state)
-                } label: {
-                    Text(shortLabel(state))
-                        .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? (state == .on ? AnyShapeStyle(.white) : AnyShapeStyle(.primary)) : AnyShapeStyle(enabled ? .secondary : .quaternary))
-                        .lineLimit(1)
-                        .frame(width: 40, height: 20)
-                        .background {
-                            if selected {
-                                // Only On earns the accent; every reduced state stays neutral.
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .fill(state == .on ? Theme.accent : Theme.raised)
-                                    .shadow(color: .black.opacity(0.1), radius: 1, y: 0.5)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                            .strokeBorder(Color.black.opacity(0.04), lineWidth: 0.5)
-                                    )
-                                    .matchedGeometryEffect(id: "thumb", in: thumb)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!enabled)
-                .help(tooltip(state))
-            }
-        }
-        .padding(2)
-        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Theme.track))
-        .animation(reduceMotion ? nil : Motion.slide, value: current)
-    }
-}
-
-/// "Off in 3" for a server that `/mcp` disabled in some projects while it's allowed here.
-func offLabel(_ projects: [String]) -> String { "Off in \(projects.count)" }
-
-func offDetail(_ projects: [String]) -> String {
-    "Turned off with /mcp in \(projects.count == 1 ? "this project" : "these projects"):\n"
-        + projects.joined(separator: "\n")
-}
-
-struct MCPsSection: View {
-    @ObservedObject var store: AppStore
-
-    private var summary: String {
-        let active = store.mcpServers.filter(\.enabled).count
-            + store.claudeAiIntegrations.filter { !$0.denied }.count
-        let total = store.mcpServers.count + store.claudeAiIntegrations.count
-        return "\(active) of \(total) allowed"
-    }
-
-    var body: some View {
-        ListToolbar(summary: summary)
-
-        SectionLabel(title: "User", count: store.mcpServers.count)
-        if store.mcpServers.isEmpty {
-            InlineNote(text: "No local MCP servers in ~/.claude.json.")
-        } else {
-            ForEach(store.mcpServers) { server in
-                MCPRow(server: server) { store.toggleMCPServer(server) }
-            }
-        }
-
-        SectionLabel(title: "claude.ai", count: store.claudeAiIntegrations.isEmpty ? nil : store.claudeAiIntegrations.count)
-        if store.loadingClaudeAi && store.claudeAiIntegrations.isEmpty {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Checking connections…").font(.rowSubtitle).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, Theme.gutter)
-            .padding(.vertical, 8)
-        } else if store.claudeAiIntegrations.isEmpty {
-            InlineNote(text: "No claude.ai integrations found.")
-        } else {
-            ForEach(store.claudeAiIntegrations) { integration in
-                ClaudeAiRow(integration: integration) {
-                    store.toggleClaudeAiIntegration(integration)
-                }
-            }
-        }
-    }
-}
-
-/// One-line empty note inside a subsection, where a full empty state would be too loud.
-struct InlineNote: View {
-    let text: String
-    var body: some View {
-        Text(verbatim: text)
-            .font(.rowSubtitle)
-            .foregroundStyle(.tertiary)
-            .padding(.horizontal, Theme.gutter)
-            .padding(.vertical, 6)
-    }
-}
-
-struct ClaudeAiRow: View {
-    let integration: ClaudeAiIntegration
-    let onToggle: () -> Void
-
-    private var symbol: String {
-        switch integration.name {
-        case "Gmail": return "envelope.fill"
-        case "Google Calendar": return "calendar"
-        case "Google Drive": return "folder.fill"
-        case "Slack": return "number"
-        case "Miro": return "square.on.square"
-        case "Figma": return "paintbrush.pointed.fill"
-        default: return "cloud.fill"
-        }
-    }
-
-    private var tint: Color {
-        switch integration.name {
-        case "Gmail": return .red
-        case "Google Calendar": return .blue
-        case "Google Drive": return .green
-        case "Slack": return .purple
-        case "Miro": return .yellow
-        case "Figma": return .pink
-        default: return .gray
-        }
-    }
-
-    private var statusColor: Color {
-        let status = integration.status.lowercased()
-        if integration.denied { return .secondary }
-        if status.contains("auth") { return .orange }
-        if status.contains("connected") && !status.contains("not") { return .green }
-        return .secondary
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Tile(glyph: .symbol(symbol), tint: tint, dimmed: integration.denied)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(verbatim: integration.name)
-                    .font(.rowTitle)
-                    .foregroundStyle(integration.denied ? .secondary : .primary)
-                HStack(spacing: 2) {
-                    StatusDot(color: statusColor)
-                    Text(verbatim: integration.status)
-                        .font(.rowSubtitle)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .padding(.leading, -3)
-            }
-            Spacer(minLength: 8)
-            if !integration.denied && !integration.offInProjects.isEmpty {
-                ProjectMarker(label: offLabel(integration.offInProjects), detail: offDetail(integration.offInProjects))
-            }
-            LoadoutSwitch(isOn: !integration.denied, onToggle: onToggle)
-        }
-        .rowChrome()
-    }
-}
-
-struct MCPRow: View {
-    let server: LocalMCPServer
-    let onToggle: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Tile(
-                glyph: .symbol(server.kind == "stdio" ? "terminal.fill" : "globe"),
-                tint: Tile.tint(for: server.name),
-                dimmed: !server.enabled
-            )
-            VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: server.name)
-                    .font(.rowTitle)
-                    .foregroundStyle(server.enabled ? .primary : .secondary)
-                HStack(spacing: 6) {
-                    Text(verbatim: server.kind.uppercased())
-                        .font(.system(size: 9, weight: .semibold))
-                        .tracking(0.4)
-                        .foregroundStyle(.tertiary)
-                    Text(verbatim: server.summary)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-            Spacer(minLength: 8)
-            if server.enabled && !server.offInProjects.isEmpty {
-                ProjectMarker(label: offLabel(server.offInProjects), detail: offDetail(server.offInProjects))
-            }
-            LoadoutSwitch(isOn: server.enabled, onToggle: onToggle)
-        }
-        .rowChrome()
-    }
-}
-
 // MARK: - Debug snapshots
 
 #if DEBUG
-/// `LOADOUT_SNAPSHOT=/some/dir .build/debug/Loadout` renders every tab in light
-/// and dark into PNGs, then exits. Lets you review the panel without clicking
-/// through the menu bar. Debug builds only.
+/// `LOADOUT_SNAPSHOT=/some/dir .build/debug/Loadout` renders every tab in light and
+/// dark into PNGs, then exits. `LOADOUT_SCOPE=/a/project` renders that project's view.
+/// Lets you review the panel without clicking through the menu bar. Debug builds only.
 enum SnapshotRenderer {
     @MainActor private static var windows: [NSWindow] = []
 
@@ -1815,7 +733,8 @@ enum SnapshotRenderer {
         let outDir = URL(fileURLWithPath: dir)
         try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
-        let store = AppStore(readOnly: true)
+        let scope = ProcessInfo.processInfo.environment["LOADOUT_SCOPE"].map(Scope.project)
+        let store = AppStore(readOnly: true, initialScope: scope ?? .allProjects)
         var jobs: [(name: String, view: NSView)] = []
         for (appearanceName, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             for tab in MenuView.Tab.allCases {
