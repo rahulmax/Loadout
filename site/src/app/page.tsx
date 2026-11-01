@@ -22,7 +22,7 @@ const GAPS = [
   },
   {
     command: 'deniedMcpServers',
-    body: 'The one block that holds in every project. No UI: you type server names and URLs into settings.json.',
+    body: 'The one block that holds in every project, and no project can undo it. No UI: you type server names and URLs into settings.json.',
   },
 ]
 
@@ -39,47 +39,35 @@ const FEATURES: {
     kanji: '港',
     name: 'Ports',
     title: 'See what’s running. Stop what isn’t needed.',
-    body: 'Every dev server listening on your Mac, with its project folder, framework, PID and uptime. A live probe marks each one as responding or not.',
+    body: 'Every dev server listening on your Mac, grouped by project with the folder, framework, PID and uptime. A live probe marks each one as responding or not.',
     points: [
-      'Restart relaunches the same command in the same folder',
-      'Kill sends SIGTERM, then SIGKILL if it hangs on',
-      'Kill all asks twice',
+      'A Tools shortcut on each project opens its switches',
+      'Kill N stops a whole project’s servers. Kill all asks twice',
+      'Pick a project to show only its servers, with Show all to widen it',
     ],
   },
   {
-    tab: 'plugins',
+    tab: 'tools',
     kanji: '具',
-    name: 'Plugins',
-    title: 'One switch per plugin.',
-    body: 'Every installed plugin with its version and marketplace. The switch writes enabledPlugins. Off takes the plugin’s skills, agents and MCP servers with it.',
+    name: 'Tools',
+    title: 'One row per service.',
+    body: 'Figma as a plugin, an MCP server and a claude.ai connector is one row with one switch. Open it to see each tool’s own control. Every connector on your account is listed, including ones you never added by hand.',
     points: [
-      'Reads installed_plugins.json',
-      'New sessions pick up the change',
-      'Running ones reload with one paste',
+      'A This project tag and a reset icon mark what a project overrides',
+      'Connectors you haven’t connected show locked, as Not connected',
+      'Plugin, MCP and connector token cost on every row',
     ],
   },
   {
     tab: 'skills',
     kanji: '技',
     name: 'Skills',
-    title: 'Four states, one tap each.',
-    body: 'On, Name, Slash or Off for every skill in ~/.claude/skills, set once for every project. Plugin skills are listed with their plugin. Claude Code ignores per-skill settings for them, so the plugin switch is the one that counts.',
+    title: 'Auto, Manual or Off.',
+    body: 'Auto lets the agent pick a skill. Manual is only when you type /name. Off hides it everywhere. Each skill shows what it costs per session. Name only, where the agent sees just the name, is in the right-click menu. Plugin skills are summarised, with Change in Tools.',
     points: [
-      'Writes skillOverrides in your user settings',
-      'A folder marker shows projects that set their own state',
+      'Set for all projects, or for one project',
+      'Writes skillOverrides to your user settings or the project’s',
       'Turn all off, with a two-step confirm',
-    ],
-  },
-  {
-    tab: 'mcp',
-    kanji: '繋',
-    name: 'MCP',
-    title: 'Off in every project, not just this one.',
-    body: 'Local servers and claude.ai integrations both go on deniedMcpServers, the block list Claude Code checks in every project. Each server’s config stays where it is, so turning it back on is one click.',
-    points: [
-      'Flags servers that /mcp turned off in some projects',
-      'Blocked integrations stay listed',
-      'Live status from claude mcp list',
     ],
   },
 ]
@@ -88,29 +76,81 @@ const FIELDS = [
   {
     field: 'enabledPlugins',
     file: '~/.claude/settings.json',
-    purpose: 'Plugin on or off, with its skills and MCP servers',
+    purpose: 'Plugin on or off by default, with its skills and MCP servers',
+  },
+  {
+    field: 'allowedMcpServers',
+    file: '~/.claude/settings.json',
+    purpose: 'Servers allowed by default. A project can allow or block its own',
   },
   {
     field: 'skillOverrides',
     file: '~/.claude/settings.json',
-    purpose: 'on · name-only · user-invocable-only · off, per user skill',
+    purpose: 'Auto, Manual, Off or Name only, per skill, by default',
   },
   {
-    field: 'deniedMcpServers',
-    file: '~/.claude/settings.json',
-    purpose: 'Servers blocked in every project, by name or URL',
+    field: 'Project settings',
+    file: '.claude/settings.local.json',
+    purpose: 'What one project turns on or off, for plugins, servers and skills',
+  },
+  {
+    field: 'Codex',
+    file: '~/.codex/config.toml · .codex/config.toml',
+    purpose: 'MCP servers, plugins and connectors, by default or per project',
+  },
+  {
+    field: 'Antigravity',
+    file: '~/.gemini/config/mcp_config.json · .agents/mcp_config.json',
+    purpose: 'MCP servers, by default or per project',
+  },
+  {
+    field: 'Skill links',
+    file: '.agents/skills',
+    purpose: 'How skills reach Codex, Antigravity and Cursor',
   },
   {
     field: 'disabledMcpServers',
     file: '~/.claude.json, per project',
-    purpose: 'Read only. What /mcp turned off in one project',
+    purpose: 'Read. Cleared for a server when you turn it on in that project',
     readOnly: true,
   },
+]
+
+const HARNESSES = [
   {
-    field: 'skillOverrides',
-    file: '.claude/settings.local.json, per project',
-    purpose: 'Read only. What /skills set in one project',
-    readOnly: true,
+    name: 'Claude Code',
+    project: 'Plugins, MCP servers, connectors and skills',
+    all: 'The same, as the default for every project',
+  },
+  {
+    name: 'Codex',
+    project: 'MCP servers, plugins and connectors, in folders you trust in Codex. One click trusts a folder',
+    all: 'MCP servers, plugins and connectors',
+  },
+  {
+    name: 'Antigravity',
+    project: 'A project can add MCP servers. Global ones stay on',
+    all: 'MCP servers and plugins. Plugins are global only',
+  },
+  {
+    name: 'Cursor',
+    project: 'Listed, read-only',
+    all: 'Listed, read-only. Cursor keeps on and off in its own app state',
+  },
+]
+
+const HARNESS_NOTES = [
+  {
+    title: 'One-time switch to default-off',
+    body: 'In Claude Code a global block can’t be undone by a project. For per-project control, servers have to be off unless allowed. A banner asks first. What’s on today stays on, your settings are backed up, and Undo and a Restore menu item put them back. Until you switch, a project can turn things off but can’t turn on what’s globally blocked.',
+  },
+  {
+    title: 'Kept out of git',
+    body: 'Project files are .claude/settings.local.json, .codex/config.toml, .agents/mcp_config.json and .agents/skills. Loadout adds them to .git/info/exclude, so git status stays clean.',
+  },
+  {
+    title: 'Skills reach the others',
+    body: 'Codex, Antigravity and Cursor read skills through links in .agents/skills. Presets save the current set and apply it to another project, from the header’s … menu.',
   },
 ]
 
@@ -124,19 +164,19 @@ const NOTES = [
     body: 'Claude Code has no local socket to talk to. The clipboard hands over the reload, and you stay in charge of when.',
   },
   {
-    title: 'No undo',
-    body: 'Toggles write straight away. To revert, toggle back. The two bulk actions ask twice.',
+    title: 'Undo',
+    body: 'The footer says what was saved, such as Figma off in tea-house, and offers Undo. Reset all puts a project back on the defaults.',
   },
 ]
 
 const SPECS = [
   ['Platform', 'macOS 14+'],
   ['Built in', 'SwiftUI'],
-  ['Reads', 'Local files only'],
+  ['Reads', 'Local files and the claude CLI'],
 ]
 
 const STATS = [
-  ['2', 'Swift files'],
+  ['9', 'Swift files'],
   ['1', 'build script'],
   ['0', 'daemons, accounts or patches'],
 ]
@@ -184,7 +224,7 @@ export default function Home() {
               <p className="kicker">
                 A menu bar app
                 <br />
-                for Claude Code _
+                for coding agents _
               </p>
               <p className="tategaki" lang="ja" aria-hidden>
                 装備
@@ -208,21 +248,21 @@ export default function Home() {
                 </h1>
                 <p className="hero-lede">
                   <span className="dot" aria-hidden />A small macOS panel for
-                  the plugins, skills and MCP servers Claude Code loads into
-                  every session.
+                  the plugins, skills and MCP servers your coding agents load
+                  into every session.
                 </p>
                 <p className="hero-body">
-                  Claude Code’s own switches work one project at a time. Loadout
-                  sets them once for every project, and shows where a project
-                  keeps its own. It also shows the dev servers you forgot were
-                  running.
+                  Claude Code’s own switches mostly work one project at a time.
+                  Loadout sets a default for every project, lets one project
+                  differ, and shows which ones do. It also shows the dev
+                  servers you forgot were running.
                 </p>
                 <div className="hero-actions">
                   <a
                     href="#install"
                     className="button button-primary no-underline"
                   >
-                    Build it
+                    Install
                     <ArrowDown size={15} strokeWidth={1.75} aria-hidden />
                   </a>
                   <a href={REPO} className="button button-quiet no-underline">
@@ -233,7 +273,7 @@ export default function Home() {
               </div>
 
               <figure className="hero-stage">
-                <Panel initialTab="skills" className="stage-panel" />
+                <Panel initialTab="tools" className="stage-panel" />
                 <figcaption className="stage-caption">
                   The panel, rebuilt for this page. Try the tabs and switches.
                 </figcaption>
@@ -246,10 +286,11 @@ export default function Home() {
           <div className="shell frame">
             <BandLabel numeral="01" label="What it does" />
             <div className="frame-main">
-              <BandHead title="Four tabs. Every switch is global.">
-                Click the menu bar icon and the panel opens on Ports. Every
-                switch writes your user settings straight away and copies the
-                reload command for you.
+              <BandHead title="Three tabs. Every switch has a scope.">
+                Click the menu bar icon and the panel opens on Ports. Pick
+                All projects or one project at the top, and the switches below
+                change that scope. Each change saves straight away, says what
+                it saved, and copies the reload command for you.
               </BandHead>
 
               <Tabs
@@ -293,12 +334,13 @@ export default function Home() {
           <div className="shell frame">
             <BandLabel numeral="02" label="How it works" />
             <div className="frame-main">
-              <BandHead title="Off should mean off everywhere.">
+              <BandHead title="Off by default. On where you want it.">
                 Every plugin, skill and MCP server you install is described to
                 the model when a session starts. Claude Code can switch each one
-                off, but mostly per project. Loadout writes the user-level
-                fields, reads the project ones, and touches nothing else. No
-                daemon, no account, no patching Claude Code.
+                off, but mostly per project. Loadout writes the default for
+                every project and the settings files for each project, and
+                touches nothing else. No daemon, no account, no patching
+                Claude Code.
               </BandHead>
 
               <Tabs
@@ -330,7 +372,7 @@ export default function Home() {
                     panel: (
                       <>
                         <p className="panel-lede">
-                          One skill, four states. What each adds to every
+                          One skill, four states. Name only is in the right-click menu. What each adds to every
                           session, before you type anything.
                         </p>
                         <SkillCostFigure />
@@ -344,7 +386,8 @@ export default function Home() {
                       <>
                         <p className="panel-lede">
                           Loadout reads your config when it opens and writes the
-                          same user-level fields you would edit by hand.
+                          same settings files you would edit by hand, for all
+                          projects or for one.
                         </p>
                         <FlowFigure />
                         <ul className="notes">
@@ -359,13 +402,56 @@ export default function Home() {
                     ),
                   },
                   {
+                    id: 'harnesses',
+                    tab: 'Harnesses',
+                    panel: (
+                      <>
+                        <p className="panel-lede">
+                          Claude Code gets everything. The others get what
+                          their config allows.
+                        </p>
+                        <div className="table-wrap">
+                          <table className="field-table">
+                            <caption className="sr-only">
+                              What Loadout can control in each tool
+                            </caption>
+                            <thead>
+                              <tr>
+                                <th scope="col">Tool</th>
+                                <th scope="col">Per project</th>
+                                <th scope="col">All projects</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {HARNESSES.map((h) => (
+                                <tr key={h.name}>
+                                  <th scope="row">{h.name}</th>
+                                  <td>{h.project}</td>
+                                  <td>{h.all}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <ul className="notes">
+                          {HARNESS_NOTES.map((n) => (
+                            <li key={n.title}>
+                              <strong>{n.title}</strong>
+                              <p>{n.body}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    ),
+                  },
+                  {
                     id: 'fields',
-                    tab: 'Fields',
+                    tab: 'Files',
                     panel: (
                       <div className="table-wrap">
                         <table className="field-table">
                           <caption className="sr-only">
-                            Settings fields Loadout writes and reads
+                            Settings files and fields Loadout writes and reads
                           </caption>
                           <thead>
                             <tr>
@@ -402,9 +488,9 @@ export default function Home() {
               <div className="install">
                 <div className="install-grid">
                   <div>
-                    <h2>Build it in a minute.</h2>
+                    <h2>Install it in a minute.</h2>
                     <p className="install-lede">
-                      Build it, drop it in Applications, and the backpack
+                      Download or build it, drop it in Applications, and the backpack
                       appears in your menu bar.
                     </p>
                     <dl className="stats">
@@ -430,9 +516,13 @@ export default function Home() {
                       </code>
                     </pre>
                     <ul className="install-reqs">
+                      <li>
+                        Or download the zip from{' '}
+                        <a href={`${REPO}/releases/latest`}>Releases</a>. It isn’t notarized, so macOS blocks the first open: use Open Anyway in System Settings, Privacy &amp; Security
+                      </li>
                       <li>macOS 14 Sonoma or later</li>
-                      <li>Swift 5.9 toolchain (Xcode or Command Line Tools)</li>
-                      <li>Claude Code, for the settings it manages</li>
+                      <li>Swift 5.9 toolchain (Xcode or Command Line Tools), to build from source</li>
+                      <li>Claude Code, Codex, Antigravity or Cursor, for the settings it manages</li>
                     </ul>
                   </div>
                 </div>

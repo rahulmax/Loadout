@@ -1,63 +1,88 @@
 'use client'
 
 import {
-  Calendar,
   CheckCircle2,
+  ChevronRight,
   ClipboardList,
-  Copy,
   Folder,
-  FolderOpen,
-  Globe,
-  Hash,
-  Mail,
-  PenTool,
+  FolderPlus,
+  Layers,
+  Lock,
   Power,
-  Puzzle,
   Radio,
   RotateCw,
-  Server,
+  Search,
+  SlidersHorizontal,
   Sparkles,
-  SquareTerminal,
+  Undo2,
+  Wrench,
   X,
+  ChevronsUpDown,
   type LucideIcon,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Pictogram } from '../pictogram'
 import {
   AUTHOR_LOCK_TIP,
-  HOSTED_MCPS,
-  LOCAL_MCPS,
-  PLUGIN_SKILL_NOTE,
-  PLUGIN_SKILLS,
-  PLUGINS,
   PORTS,
+  PROJECTS,
+  SERVICES,
+  SERVICE_OVERRIDES,
+  SKILL_LEGEND,
+  SKILL_OVERRIDES,
   SKILL_STATES,
   USER_SKILLS,
-  type HostedMcp,
+  formatTokens,
+  type Port,
+  type Scope,
+  type Service,
+  type Skill,
   type SkillState,
   type TabId,
 } from './panel-data'
 
 const TABS: { id: TabId; label: string; icon: LucideIcon }[] = [
   { id: 'ports', label: 'Ports', icon: Radio },
-  { id: 'plugins', label: 'Plugins', icon: Puzzle },
+  { id: 'tools', label: 'Tools', icon: Wrench },
   { id: 'skills', label: 'Skills', icon: Sparkles },
-  { id: 'mcp', label: 'MCP', icon: Server },
 ]
 
-const HOSTED_ICONS: Record<HostedMcp['icon'], LucideIcon> = {
-  figma: PenTool,
-  gmail: Mail,
-  calendar: Calendar,
-  drive: Folder,
-  miro: Copy,
-  slack: Hash,
+/** Everything a switch can change. One snapshot per undo step. */
+interface Data {
+  svc: Record<string, boolean[]>
+  svcOver: Record<string, Record<string, boolean[]>>
+  skill: Record<string, SkillState>
+  skillOver: Record<string, Record<string, SkillState>>
+}
+
+interface Note {
+  text: string
+  reload: boolean
+}
+
+const initialData = (): Data => ({
+  svc: Object.fromEntries(SERVICES.map((s) => [s.id, [...s.on]])),
+  svcOver: structuredClone(SERVICE_OVERRIDES),
+  skill: Object.fromEntries(USER_SKILLS.map((s) => [s.name, s.state])),
+  skillOver: structuredClone(SKILL_OVERRIDES),
+})
+
+type MainState = 'on' | 'off' | 'mixed' | 'locked-on' | 'locked-off'
+
+function mainState(service: Service, values: boolean[]): MainState {
+  const open = service.controls
+    .map((c, i) => (c.lock ? null : values[i]))
+    .filter((v): v is boolean => v !== null)
+  if (open.length === 0) return values.some(Boolean) ? 'locked-on' : 'locked-off'
+  if (open.every(Boolean)) return 'on'
+  if (open.some(Boolean)) return 'mixed'
+  return 'off'
 }
 
 /**
  * The Loadout menu bar panel, rebuilt in HTML from the SwiftUI views. It is a
- * working model: tabs switch, switches flip, skill states move, and every
- * change "copies" /reload-plugins the way the app does. Nothing persists.
+ * working model: pick a project, flip switches, move skill states, kill a
+ * server, undo. The footer says what was saved. Nothing persists.
  */
 export function Panel({
   initialTab = 'ports',
@@ -69,32 +94,174 @@ export function Panel({
   className?: string
 }) {
   const [tab, setTab] = useState<TabId>(initialTab)
-  const [plugins, setPlugins] = useState(() => PLUGINS.map((p) => p.enabled))
-  const [skills, setSkills] = useState<Record<string, SkillState>>(() =>
-    Object.fromEntries(USER_SKILLS.map((s) => [s.name, s.state])),
-  )
-  const [local, setLocal] = useState(() => LOCAL_MCPS.map((m) => m.enabled))
-  const [hosted, setHosted] = useState(() => HOSTED_MCPS.map((m) => m.allowed))
-  const [copied, setCopied] = useState(false)
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const [scope, setScope] = useState<Scope>(null)
+  const [picking, setPicking] = useState(false)
+  const [data, setData] = useState<Data>(initialData)
+  const [undo, setUndo] = useState<{ data: Data; note: Note }[]>([])
+  const [note, setNote] = useState<Note | null>(null)
+  const [ports, setPorts] = useState<Port[]>(PORTS)
+  const [showAll, setShowAll] = useState(false)
+  const [expanded, setExpanded] = useState<string[]>([])
 
-  useEffect(() => () => clearTimeout(timer.current), [])
+  const project = PROJECTS.find((p) => p.id === scope) ?? null
+  const where = project ? `in ${project.name}` : 'by default'
 
-  const didWrite = () => {
-    setCopied(true)
-    clearTimeout(timer.current)
-    timer.current = setTimeout(() => setCopied(false), 2200)
+  const commit = (next: Data, text: string, reload = true) => {
+    setUndo([...undo, { data, note: { text, reload } }])
+    setData(next)
+    setNote({ text, reload })
   }
 
-  const flip = (list: boolean[], i: number) =>
-    list.map((v, j) => (j === i ? !v : v))
+  const pickScope = (next: Scope) => {
+    setScope(next)
+    setShowAll(false)
+    setPicking(false)
+  }
 
-  const skillValues = Object.values(skills)
+  // Service state for the current scope.
+  const svcValues = (s: Service) =>
+    (scope && data.svcOver[scope]?.[s.id]) || data.svc[s.id]
+  const svcSetHere = (s: Service) => !!scope && !!data.svcOver[scope]?.[s.id]
+  const svcProjects = (s: Service) =>
+    scope
+      ? []
+      : PROJECTS.filter((p) => data.svcOver[p.id]?.[s.id]).map((p) => p.name)
+
+  const writeService = (s: Service, values: boolean[], text: string) => {
+    if (scope) {
+      commit(
+        {
+          ...data,
+          svcOver: {
+            ...data.svcOver,
+            [scope]: { ...data.svcOver[scope], [s.id]: values },
+          },
+        },
+        text,
+      )
+    } else {
+      commit({ ...data, svc: { ...data.svc, [s.id]: values } }, text)
+    }
+  }
+
+  const setService = (s: Service, on: boolean) => {
+    const cur = svcValues(s)
+    writeService(
+      s,
+      s.controls.map((c, i) => (c.lock ? cur[i] : on)),
+      `${s.name} ${on ? 'on' : 'off'} ${where}`,
+    )
+  }
+
+  const setControl = (s: Service, index: number, on: boolean) => {
+    const values = svcValues(s).map((v, i) => (i === index ? on : v))
+    writeService(
+      s,
+      values,
+      `${s.name} ${on ? 'on' : 'off'} in ${s.controls[index].harness} ${where}`,
+    )
+  }
+
+  const resetService = (s: Service) => {
+    if (!scope) return
+    const { [s.id]: _removed, ...rest } = data.svcOver[scope]
+    void _removed
+    commit(
+      { ...data, svcOver: { ...data.svcOver, [scope]: rest } },
+      `${s.name} back to the default`,
+    )
+  }
+
+  // Skill state for the current scope.
+  const skillValue = (k: Skill): SkillState =>
+    (scope && data.skillOver[scope]?.[k.name]) || data.skill[k.name]
+  const skillSetHere = (k: Skill) =>
+    !!scope && !!data.skillOver[scope]?.[k.name]
+  const skillProjects = (k: Skill) =>
+    scope
+      ? []
+      : PROJECTS.filter((p) => data.skillOver[p.id]?.[k.name]).map(
+          (p) => `${p.name}: ${labelOf(data.skillOver[p.id][k.name])}`,
+        )
+
+  const writeSkills = (changes: Record<string, SkillState>, text: string) => {
+    if (scope) {
+      commit(
+        {
+          ...data,
+          skillOver: {
+            ...data.skillOver,
+            [scope]: { ...data.skillOver[scope], ...changes },
+          },
+        },
+        text,
+      )
+    } else {
+      commit({ ...data, skill: { ...data.skill, ...changes } }, text)
+    }
+  }
+
+  const setSkill = (k: Skill, state: SkillState) =>
+    writeSkills({ [k.name]: state }, `${k.name} ${labelOf(state)} ${where}`)
+
+  const resetSkill = (k: Skill) => {
+    if (!scope) return
+    const { [k.name]: _removed, ...rest } = data.skillOver[scope]
+    void _removed
+    commit(
+      { ...data, skillOver: { ...data.skillOver, [scope]: rest } },
+      `${k.name} back to the default`,
+    )
+  }
+
+  const turnOffAll = () =>
+    writeSkills(
+      Object.fromEntries(USER_SKILLS.map((k) => [k.name, 'off' as const])),
+      `All skills off ${where}`,
+    )
+
+  const setHereCount = scope
+    ? Object.keys(data.svcOver[scope] ?? {}).length +
+      Object.keys(data.skillOver[scope] ?? {}).length
+    : 0
+
+  const resetAll = () => {
+    if (!project) return
+    commit(
+      {
+        ...data,
+        svcOver: { ...data.svcOver, [project.id]: {} },
+        skillOver: { ...data.skillOver, [project.id]: {} },
+      },
+      `${project.name} back to the defaults`,
+    )
+  }
+
+  const undoLast = () => {
+    const last = undo[undo.length - 1]
+    if (!last) return
+    setData(last.data)
+    setUndo(undo.slice(0, -1))
+    setNote({ text: `Undid: ${last.note.text}`, reload: last.note.reload })
+  }
+
+  const kill = (list: Port[]) => {
+    const gone = new Set(list.map((p) => p.port))
+    setPorts(ports.filter((p) => !gone.has(p.port)))
+    setNote({
+      text:
+        list.length === 1
+          ? `Stopped localhost:${list[0].port}`
+          : `Stopped ${list.length} servers`,
+      reload: false,
+    })
+  }
+
   const counts: Record<TabId, number> = {
-    ports: PORTS.length,
-    plugins: PLUGINS.length,
-    skills: skillValues.length + PLUGIN_SKILLS.length,
-    mcp: LOCAL_MCPS.length + HOSTED_MCPS.length,
+    ports: ports.length,
+    tools: SERVICES.length,
+    skills:
+      USER_SKILLS.length + SERVICES.filter((s) => s.pluginSkills).length,
   }
 
   return (
@@ -104,9 +271,59 @@ export function Panel({
           <Pictogram name="backpack" />
         </span>
         <span className="mac-title">Loadout</span>
-        <span className="mac-icon-button" aria-hidden>
+        <span
+          className="mac-icon-button"
+          title="Tools, presets and restore"
+          aria-hidden
+        >
           <RotateCw size={14} strokeWidth={1.8} />
         </span>
+      </div>
+
+      <div className="mac-scope">
+        <button
+          type="button"
+          className="mac-picker"
+          aria-expanded={picking}
+          aria-label={`Project: ${project?.name ?? 'All projects'}`}
+          onClick={() => setPicking(!picking)}
+        >
+          {project ? (
+            <Folder size={13} strokeWidth={1.8} aria-hidden />
+          ) : (
+            <Layers size={13} strokeWidth={1.8} aria-hidden />
+          )}
+          <span className="mac-row-text">
+            <span className="mac-name">{project?.name ?? 'All projects'}</span>
+            {project && <span className="mac-sub">{project.path}</span>}
+          </span>
+          <ChevronsUpDown size={12} strokeWidth={2} aria-hidden />
+        </button>
+        {picking ? (
+          <ProjectMenu
+            scope={scope}
+            onPick={pickScope}
+            onClose={() => setPicking(false)}
+          />
+        ) : (
+          <div className="mac-scope-line">
+            <span>
+              {!project
+                ? 'The default for every project. A project can differ.'
+                : setHereCount === 0
+                  ? 'Only this folder. Everything follows the default.'
+                  : `Only this folder. ${setHereCount} set here, the rest follow the default.`}
+            </span>
+            {project && setHereCount > 0 && (
+              <TwoStep
+                idle="Reset all"
+                confirm="Confirm reset"
+                icon={Undo2}
+                onConfirm={resetAll}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       <div className="mac-tabs" role="tablist" aria-label="Panel tabs">
@@ -127,209 +344,78 @@ export function Panel({
       </div>
 
       <div className="mac-body" role="tabpanel">
-        {tab === 'ports' && <PortsView />}
-
-        {tab === 'plugins' && (
-          <>
-            <Toolbar
-              summary={`${plugins.filter(Boolean).length} of ${PLUGINS.length} enabled`}
-            />
-            <ul className="mac-list">
-              {PLUGINS.map((p, i) => (
-                <li key={p.name} className="mac-row">
-                  <span className="mac-letter" aria-hidden>
-                    {p.name[0].toUpperCase()}
-                  </span>
-                  <span className="mac-row-text">
-                    <span
-                      className="mac-name"
-                      data-dim={!plugins[i] || undefined}
-                    >
-                      {p.name}
-                    </span>
-                    <span className="mac-sub">
-                      {p.version} · {p.marketplace}
-                    </span>
-                  </span>
-                  <Switch
-                    on={plugins[i]}
-                    label={p.name}
-                    onChange={() => {
-                      setPlugins(flip(plugins, i))
-                      didWrite()
-                    }}
-                  />
-                </li>
-              ))}
-            </ul>
-          </>
+        {tab === 'ports' && (
+          <PortsView
+            ports={ports}
+            project={project?.name ?? null}
+            showAll={showAll}
+            onShowAll={() => setShowAll(!showAll)}
+            onKill={kill}
+            onTools={(id) => {
+              pickScope(id)
+              setTab('tools')
+            }}
+          />
         )}
-
+        {tab === 'tools' && (
+          <ToolsView
+            values={svcValues}
+            setHere={svcSetHere}
+            projects={svcProjects}
+            expanded={expanded}
+            onExpand={(id) =>
+              setExpanded(
+                expanded.includes(id)
+                  ? expanded.filter((e) => e !== id)
+                  : [...expanded, id],
+              )
+            }
+            onService={setService}
+            onControl={setControl}
+            onReset={resetService}
+          />
+        )}
         {tab === 'skills' && (
-          <>
-            <Toolbar
-              summary={skillSummary(skillValues, PLUGIN_SKILLS.length)}
-              action="Turn all off"
-            />
-            <SectionLabel name="User" count={USER_SKILLS.length} />
-            <ul className="mac-list">
-              {USER_SKILLS.map((s) => (
-                <li key={s.name} className="mac-row mac-row-skill">
-                  <span
-                    className="mac-name"
-                    data-dim={skills[s.name] === 'off' || undefined}
-                  >
-                    {s.name}
-                  </span>
-                  {s.projects ? (
-                    <Marker
-                      label={`${s.projects} projects`}
-                      tip="These projects set their own state, which wins over this one"
-                    />
-                  ) : null}
-                  <Segmented
-                    value={skills[s.name]}
-                    label={s.name}
-                    allowed={
-                      s.authorLocked
-                        ? ['user-invocable-only', 'off']
-                        : undefined
-                    }
-                    onChange={(state) => {
-                      setSkills({ ...skills, [s.name]: state })
-                      didWrite()
-                    }}
-                  />
-                </li>
-              ))}
-            </ul>
-            <SectionLabel name="Plugins" count={PLUGIN_SKILLS.length} />
-            <ul className="mac-list">
-              {PLUGIN_SKILLS.map((s) => (
-                <li key={s.name} className="mac-row mac-row-skill">
-                  <span className="mac-row-text">
-                    <span
-                      className="mac-name"
-                      data-dim={!plugins[s.plugin] || undefined}
-                    >
-                      {s.name}
-                    </span>
-                    <span className="mac-sub">{PLUGINS[s.plugin].name}</span>
-                  </span>
-                  <span
-                    className="mac-lock"
-                    title="Plugin skills ignore skillOverrides. Use the plugin's switch in Plugins."
-                  >
-                    {plugins[s.plugin] ? 'On with plugin' : 'Off with plugin'}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            <p className="mac-note">{PLUGIN_SKILL_NOTE}</p>
-          </>
-        )}
-
-        {tab === 'mcp' && (
-          <>
-            <Toolbar
-              summary={`${local.filter(Boolean).length + hosted.filter(Boolean).length} of ${counts.mcp} allowed`}
-            />
-            <SectionLabel name="User" count={LOCAL_MCPS.length} />
-            <ul className="mac-list">
-              {LOCAL_MCPS.map((m, i) => (
-                <li key={m.name} className="mac-row">
-                  <span className="mac-glyph" aria-hidden>
-                    {m.transport === 'HTTP' ? (
-                      <Globe size={15} strokeWidth={1.6} />
-                    ) : (
-                      <SquareTerminal size={15} strokeWidth={1.6} />
-                    )}
-                  </span>
-                  <span className="mac-row-text">
-                    <span
-                      className="mac-name"
-                      data-dim={!local[i] || undefined}
-                    >
-                      {m.name}
-                    </span>
-                    <span className="mac-sub mac-mono">
-                      <span className="mac-transport">{m.transport}</span>
-                      {m.target}
-                    </span>
-                  </span>
-                  {local[i] && m.offIn ? (
-                    <Marker
-                      label={`Off in ${m.offIn}`}
-                      tip="Turned off with /mcp in some projects"
-                    />
-                  ) : null}
-                  <Switch
-                    on={local[i]}
-                    label={m.name}
-                    onChange={() => {
-                      setLocal(flip(local, i))
-                      didWrite()
-                    }}
-                  />
-                </li>
-              ))}
-            </ul>
-            <SectionLabel name="claude.ai" count={HOSTED_MCPS.length} />
-            <ul className="mac-list">
-              {HOSTED_MCPS.map((m, i) => {
-                const Icon = HOSTED_ICONS[m.icon]
-                return (
-                  <li key={m.name} className="mac-row">
-                    <span className="mac-glyph" aria-hidden>
-                      <Icon size={15} strokeWidth={1.6} />
-                    </span>
-                    <span className="mac-row-text">
-                      <span
-                        className="mac-name"
-                        data-dim={!hosted[i] || undefined}
-                      >
-                        {m.name}
-                      </span>
-                      <span className="mac-sub mac-status">
-                        <span
-                          className="mac-dot"
-                          data-state={hosted[i] ? 'ok' : 'idle'}
-                        />
-                        {hosted[i] ? 'Connected' : 'Blocked locally'}
-                      </span>
-                    </span>
-                    {hosted[i] && m.offIn ? (
-                      <Marker
-                        label={`Off in ${m.offIn}`}
-                        tip="Turned off with /mcp in some projects"
-                      />
-                    ) : null}
-                    <Switch
-                      on={hosted[i]}
-                      label={m.name}
-                      onChange={() => {
-                        setHosted(flip(hosted, i))
-                        didWrite()
-                      }}
-                    />
-                  </li>
-                )
-              })}
-            </ul>
-          </>
+          <SkillsView
+            value={skillValue}
+            setHere={skillSetHere}
+            projects={skillProjects}
+            values={svcValues}
+            onSkill={setSkill}
+            onReset={resetSkill}
+            onTurnOffAll={turnOffAll}
+            onOpenTools={() => setTab('tools')}
+          />
         )}
       </div>
 
       <div className="mac-foot" aria-live="polite">
-        {copied ? (
+        {note?.reload ? (
           <CheckCircle2 size={12} className="mac-foot-ok" aria-hidden />
         ) : (
           <ClipboardList size={12} aria-hidden />
         )}
-        <span>
-          {copied ? 'Copied' : 'Changes copy'} <code>/reload-plugins</code>
-          {copied && ' · paste in Claude'}
+        <span className="mac-foot-text">
+          {note ? (
+            <>
+              <span className="mac-foot-note">{note.text}</span>
+              {note.reload && (
+                <span>
+                  Paste <code>/reload-plugins</code> in open sessions
+                </span>
+              )}
+            </>
+          ) : (
+            <span>
+              Changes copy <code>/reload-plugins</code>
+            </span>
+          )}
         </span>
+        {undo.length > 0 && (
+          <button type="button" className="mac-pill" onClick={undoLast}>
+            Undo
+          </button>
+        )}
         <span className="mac-quit">
           Quit <kbd>⌘Q</kbd>
         </span>
@@ -338,74 +424,573 @@ export function Panel({
   )
 }
 
-/**
- * "12 on · 3 trimmed · 8 off · 20 from plugins", skipping empty buckets, as
- * the app does.
- */
-function skillSummary(states: SkillState[], fromPlugins: number) {
-  const on = states.filter((s) => s === 'on').length
-  const off = states.filter((s) => s === 'off').length
-  const trimmed = states.length - on - off
-  return [
-    on && `${on} on`,
-    trimmed && `${trimmed} trimmed`,
-    off && `${off} off`,
-    fromPlugins && `${fromPlugins} from plugins`,
-  ]
-    .filter(Boolean)
-    .join(' · ')
+function labelOf(state: SkillState) {
+  return SKILL_STATES.find((s) => s.id === state)?.label ?? state
 }
 
-function PortsView() {
+function ProjectMenu({
+  scope,
+  onPick,
+  onClose,
+}: {
+  scope: Scope
+  onPick: (id: Scope) => void
+  onClose: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const term = query.trim().toLowerCase()
+  const matches = PROJECTS.filter((p) => p.name.includes(term))
+  const showAll = !term || 'all projects'.includes(term)
+
   return (
-    <>
-      <Toolbar summary={`${PORTS.length} listening`} action="Kill all" />
-      <ul className="mac-list mac-ports">
-        {PORTS.map((p) => (
-          <li key={p.port} className="mac-port">
-            <span
-              className="mac-dot"
-              data-state={p.healthy ? 'ok' : 'down'}
-              title={p.healthy ? 'Responding' : 'Not responding'}
-            />
-            <span className="mac-row-text">
-              <span className="mac-port-line">
-                <span className="mac-mono mac-port-host">
-                  localhost:<b>{p.port}</b>
+    <div
+      className="mac-menu"
+      onKeyDown={(e) => e.key === 'Escape' && onClose()}
+    >
+      <label className="mac-search">
+        <Search size={12} strokeWidth={1.8} aria-hidden />
+        <input
+          autoFocus
+          type="text"
+          value={query}
+          placeholder={`Search ${PROJECTS.length} projects`}
+          aria-label="Search projects"
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </label>
+      <ul className="mac-menu-list">
+        {showAll && (
+          <li>
+            <button
+              type="button"
+              className="mac-option"
+              aria-current={scope === null || undefined}
+              onClick={() => onPick(null)}
+            >
+              <Layers size={13} strokeWidth={1.8} aria-hidden />
+              <span className="mac-row-text">
+                <span className="mac-name">All projects</span>
+                <span className="mac-sub">
+                  The default every project starts from
                 </span>
-                <span className="mac-chip">{p.framework}</span>
               </span>
-              <span className="mac-port-path">{p.path}</span>
-              <span className="mac-port-meta">
-                PID {p.pid} · {p.process} · up {p.uptime}
+            </button>
+          </li>
+        )}
+        {matches.map((p) => (
+          <li key={p.id}>
+            <button
+              type="button"
+              className="mac-option"
+              aria-current={scope === p.id || undefined}
+              onClick={() => onPick(p.id)}
+            >
+              <Folder size={13} strokeWidth={1.8} aria-hidden />
+              <span className="mac-row-text">
+                <span className="mac-name">{p.name}</span>
+                <span className="mac-sub">{p.path}</span>
               </span>
-            </span>
-            <span className="mac-port-actions" aria-hidden>
-              <RotateCw size={13} strokeWidth={1.8} />
-              <span className="mac-pill">Kill</span>
-            </span>
+            </button>
           </li>
         ))}
+        {!showAll && matches.length === 0 && (
+          <li className="mac-empty">No project matches</li>
+        )}
+      </ul>
+      <div className="mac-menu-foot">
+        <span className="mac-menu-choose" title="Not part of this demo">
+          <FolderPlus size={12} strokeWidth={1.8} aria-hidden />
+          Choose folder…
+        </span>
+        <button type="button" className="mac-pill" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function PortsView({
+  ports,
+  project,
+  showAll,
+  onShowAll,
+  onKill,
+  onTools,
+}: {
+  ports: Port[]
+  project: string | null
+  showAll: boolean
+  onShowAll: () => void
+  onKill: (list: Port[]) => void
+  onTools: (project: string) => void
+}) {
+  const filtered = project && !showAll
+  const shown = filtered ? ports.filter((p) => p.project === project) : ports
+  const hidden = ports.length - shown.length
+  const groups = PROJECTS.map((p) => ({
+    project: p,
+    ports: shown.filter((s) => s.project === p.id),
+  })).filter((g) => g.ports.length > 0)
+
+  return (
+    <>
+      <Toolbar summary={`${shown.length} listening`}>
+        {shown.length > 0 && (
+          <TwoStep
+            idle="Kill all"
+            confirm="Confirm kill all"
+            icon={X}
+            onConfirm={() => onKill(shown)}
+          />
+        )}
+      </Toolbar>
+      {project && (
+        <div className="mac-note-row">
+          <span>
+            {showAll
+              ? 'Showing every project'
+              : `Only ${project}${hidden > 0 ? `. ${hidden} more elsewhere.` : ''}`}
+          </span>
+          <button type="button" className="mac-pill" onClick={onShowAll}>
+            {showAll ? `Only ${project}` : 'Show all'}
+          </button>
+        </div>
+      )}
+      {groups.length === 0 && <p className="mac-empty">No servers listening</p>}
+      {groups.map(({ project: p, ports: list }) => (
+        <section key={p.id} className="mac-group">
+          <div className="mac-group-head">
+            <Folder size={12} strokeWidth={1.8} aria-hidden />
+            <span className="mac-group-name">{p.name}</span>
+            <span className="mac-group-meta">{list.length}</span>
+            <span className="mac-group-meta mac-group-path">{p.path}</span>
+            <button
+              type="button"
+              className="mac-icon"
+              title="Tools for this project"
+              aria-label={`Tools for ${p.name}`}
+              onClick={() => onTools(p.id)}
+            >
+              <SlidersHorizontal size={13} strokeWidth={1.8} aria-hidden />
+            </button>
+            {list.length > 1 && (
+              <TwoStep
+                idle={`Kill ${list.length}`}
+                confirm={`Confirm kill ${list.length}`}
+                icon={X}
+                onConfirm={() => onKill(list)}
+              />
+            )}
+          </div>
+          <ul className="mac-list mac-ports">
+            {list.map((s) => (
+              <li key={s.port} className="mac-port">
+                <span
+                  className="mac-dot"
+                  data-state={s.healthy ? 'ok' : 'down'}
+                  title={s.healthy ? 'Responding' : 'Not responding'}
+                />
+                <span className="mac-row-text">
+                  <span className="mac-port-line">
+                    <span className="mac-mono mac-port-host">
+                      localhost:<b>{s.port}</b>
+                    </span>
+                    <span className="mac-chip">{s.framework}</span>
+                  </span>
+                  <span className="mac-port-meta">
+                    PID {s.pid} · {s.process} · up {s.uptime}
+                  </span>
+                </span>
+                <span className="mac-port-actions">
+                  <RotateCw size={13} strokeWidth={1.8} aria-hidden />
+                  <button
+                    type="button"
+                    className="mac-pill"
+                    onClick={() => onKill([s])}
+                  >
+                    Kill
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </>
+  )
+}
+
+function ToolsView({
+  values,
+  setHere,
+  projects,
+  expanded,
+  onExpand,
+  onService,
+  onControl,
+  onReset,
+}: {
+  values: (s: Service) => boolean[]
+  setHere: (s: Service) => boolean
+  projects: (s: Service) => string[]
+  expanded: string[]
+  onExpand: (id: string) => void
+  onService: (s: Service, on: boolean) => void
+  onControl: (s: Service, index: number, on: boolean) => void
+  onReset: (s: Service) => void
+}) {
+  const [filter, setFilter] = useState('')
+  const term = filter.trim().toLowerCase()
+  const matches = SERVICES.filter((s) => s.name.toLowerCase().includes(term))
+  const on = SERVICES.filter((s) => {
+    const m = mainState(s, values(s))
+    return m === 'on' || m === 'mixed' || m === 'locked-on'
+  })
+  const skillTokens = on.reduce((n, s) => n + (s.pluginSkills?.tokens ?? 0), 0)
+
+  return (
+    <>
+      <FilterField
+        value={filter}
+        onChange={setFilter}
+        placeholder="Filter tools"
+      />
+      <Toolbar
+        summary={`${on.length} of ${SERVICES.length} on${skillTokens > 0 ? ` · plugin skills ${formatTokens(skillTokens)}` : ''}`}
+      />
+      {matches.length === 0 && (
+        <p className="mac-empty">Nothing matches {filter}</p>
+      )}
+      <ul className="mac-list">
+        {matches.map((s) => {
+          const v = values(s)
+          const state = mainState(s, v)
+          const open = expanded.includes(s.id)
+          const harnesses = [...new Set(s.controls.map((c) => c.harness))]
+          const subtitle = [
+            s.kind,
+            s.tokens > 0 ? formatTokens(s.tokens) : '',
+            harnesses.join(', '),
+          ]
+            .filter(Boolean)
+            .join(' · ')
+          const elsewhere = projects(s)
+          const lock = s.controls.find((c) => c.lock)?.lock
+          return (
+            <li key={s.id} className="mac-service">
+              <div className="mac-row">
+                <span className="mac-letter" aria-hidden>
+                  {s.name[0]}
+                </span>
+                <button
+                  type="button"
+                  className="mac-disclose"
+                  aria-expanded={open}
+                  aria-label={`${s.name}, details`}
+                  onClick={() => onExpand(s.id)}
+                >
+                  <ChevronRight size={11} strokeWidth={2.2} aria-hidden />
+                  <span className="mac-row-text">
+                    <span className="mac-title-line">
+                      <span
+                        className="mac-name"
+                        data-dim={
+                          state === 'off' || state === 'locked-off' || undefined
+                        }
+                      >
+                        {s.name}
+                      </span>
+                      {setHere(s) && <span className="mac-tag">This project</span>}
+                    </span>
+                    <span className="mac-sub">{subtitle}</span>
+                    {s.notConnected && (
+                      <span className="mac-sub">Not connected</span>
+                    )}
+                  </span>
+                </button>
+                {elsewhere.length > 0 && (
+                  <Marker
+                    label={elsewhere.length === 1 ? `Set in ${elsewhere[0]}` : `Set in ${elsewhere.length} projects`}
+                    tip={elsewhere.join(', ')}
+                  />
+                )}
+                {setHere(s) && (
+                  <button
+                    type="button"
+                    className="mac-icon"
+                    title="Back to the default"
+                    aria-label={`Reset ${s.name} to the default`}
+                    onClick={() => onReset(s)}
+                  >
+                    <Undo2 size={13} strokeWidth={1.8} aria-hidden />
+                  </button>
+                )}
+                {state === 'locked-on' || state === 'locked-off' ? (
+                  <span className="mac-locked" title={lock}>
+                    <Lock size={10} strokeWidth={2} aria-hidden />
+                    {state === 'locked-on' ? 'On' : 'Off'}
+                  </span>
+                ) : (
+                  <>
+                    {state === 'mixed' && (
+                      <span className="mac-partly">Partly on</span>
+                    )}
+                    <Switch
+                      on={state !== 'off'}
+                      label={s.name}
+                      onChange={() => onService(s, state === 'off')}
+                    />
+                  </>
+                )}
+              </div>
+              {open && (
+                <div className="mac-detail">
+                  {s.controls.map((c, i) => (
+                    <div key={c.harness + c.label} className="mac-control">
+                      <span className="mac-control-text">
+                        <span>
+                          {c.harness}: {c.label}
+                        </span>
+                        {c.lock && <span className="mac-sub">{c.lock}</span>}
+                      </span>
+                      {c.lock ? (
+                        <Lock
+                          size={10}
+                          strokeWidth={2}
+                          className="mac-lock-icon"
+                          aria-label="Locked"
+                        />
+                      ) : (
+                        <Switch
+                          on={v[i]}
+                          label={`${s.name} in ${c.harness}`}
+                          onChange={() => onControl(s, i, !v[i])}
+                        />
+                      )}
+                    </div>
+                  ))}
+                  {s.pluginSkills && (
+                    <p className="mac-sub mac-wrap">
+                      {s.pluginSkills.count} skills come with this plugin. They
+                      go on and off with it.
+                    </p>
+                  )}
+                </div>
+              )}
+            </li>
+          )
+        })}
       </ul>
     </>
   )
 }
 
-function Toolbar({ summary, action }: { summary: string; action?: string }) {
+function SkillsView({
+  value,
+  setHere,
+  projects,
+  values,
+  onSkill,
+  onReset,
+  onTurnOffAll,
+  onOpenTools,
+}: {
+  value: (k: Skill) => SkillState
+  setHere: (k: Skill) => boolean
+  projects: (k: Skill) => string[]
+  values: (s: Service) => boolean[]
+  onSkill: (k: Skill, state: SkillState) => void
+  onReset: (k: Skill) => void
+  onTurnOffAll: () => void
+  onOpenTools: () => void
+}) {
+  const [filter, setFilter] = useState('')
+  const term = filter.trim().toLowerCase()
+  const matches = USER_SKILLS.filter((k) => k.name.includes(term))
+  const auto = USER_SKILLS.filter((k) => value(k) === 'auto')
+  const tokens = auto.reduce((n, k) => n + k.tokens, 0)
+  const plugins = SERVICES.filter((s) => s.pluginSkills)
+
+  return (
+    <>
+      <FilterField
+        value={filter}
+        onChange={setFilter}
+        placeholder="Filter skills"
+      />
+      <Toolbar
+        summary={`${auto.length} of ${USER_SKILLS.length} on Auto · ${formatTokens(tokens)} every session`}
+      >
+        <TwoStep
+          idle="Turn all off"
+          confirm="Confirm"
+          icon={Power}
+          onConfirm={onTurnOffAll}
+        />
+      </Toolbar>
+      <dl className="mac-legend">
+        {SKILL_LEGEND.map(([term, text]) => (
+          <div key={term}>
+            <dt>{term}</dt> <dd>{text}</dd>
+          </div>
+        ))}
+      </dl>
+      <SectionLabel name="Your skills" count={USER_SKILLS.length} />
+      <ul className="mac-list">
+        {matches.map((k) => {
+          const state = value(k)
+          const elsewhere = projects(k)
+          const subtitle = k.authorLocked
+            ? 'Its author turned off Auto'
+            : state === 'auto'
+              ? formatTokens(k.tokens)
+              : `Saves ${formatTokens(k.tokens)}`
+          return (
+            <li key={k.name} className="mac-row mac-row-skill">
+              <span className="mac-row-text">
+                <span className="mac-title-line">
+                  <span className="mac-name" data-dim={state === 'off' || undefined}>
+                    {k.name}
+                  </span>
+                  {setHere(k) && <span className="mac-tag">This project</span>}
+                </span>
+                <span className="mac-sub">
+                  {subtitle}
+                  {elsewhere.length > 0 && (
+                    <>
+                      {' · '}
+                      <span title={elsewhere.join(', ')}>
+                        {elsewhere.length === 1
+                          ? `Set in ${elsewhere[0]}`
+                          : `Set in ${elsewhere.length} projects`}
+                      </span>
+                    </>
+                  )}
+                </span>
+              </span>
+              {setHere(k) && (
+                <button
+                  type="button"
+                  className="mac-icon"
+                  title="Back to the default"
+                  aria-label={`Reset ${k.name} to the default`}
+                  onClick={() => onReset(k)}
+                >
+                  <Undo2 size={13} strokeWidth={1.8} aria-hidden />
+                </button>
+              )}
+              <Segmented
+                value={state}
+                label={k.name}
+                allowed={k.authorLocked ? ['manual', 'off'] : undefined}
+                onChange={(next) => onSkill(k, next)}
+              />
+            </li>
+          )
+        })}
+      </ul>
+      <SectionLabel name="From plugins" count={plugins.length} />
+      <ul className="mac-list">
+        {plugins.map((s) => {
+          const m = mainState(s, values(s))
+          const isOn = m !== 'off' && m !== 'locked-off'
+          const cost = formatTokens(s.pluginSkills!.tokens)
+          return (
+            <li key={s.id} className="mac-row mac-row-skill">
+              <span className="mac-row-text">
+                <span className="mac-name" data-dim={!isOn || undefined}>
+                  {s.name}
+                </span>
+                <span className="mac-sub">
+                  {s.pluginSkills!.count} skills ·{' '}
+                  {isOn ? cost : `Off, saves ${cost}`}
+                </span>
+              </span>
+              <button type="button" className="mac-pill" onClick={onOpenTools}>
+                Change in Tools
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </>
+  )
+}
+
+function FilterField({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder: string
+}) {
+  return (
+    <label className="mac-filter">
+      <Search size={12} strokeWidth={1.8} aria-hidden />
+      <input
+        type="text"
+        value={value}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
+  )
+}
+
+function Toolbar({
+  summary,
+  children,
+}: {
+  summary: string
+  children?: React.ReactNode
+}) {
   return (
     <div className="mac-toolbar">
       <span>{summary}</span>
-      {action && (
-        <span className="mac-pill mac-pill-icon" aria-hidden>
-          {action === 'Kill all' ? (
-            <X size={11} strokeWidth={2.2} />
-          ) : (
-            <Power size={11} strokeWidth={2.2} />
-          )}
-          {action}
-        </span>
-      )}
+      {children}
     </div>
+  )
+}
+
+/** Asks twice, then lets go after a few seconds, like the app's confirm button. */
+function TwoStep({
+  idle,
+  confirm,
+  icon: Icon,
+  onConfirm,
+}: {
+  idle: string
+  confirm: string
+  icon: LucideIcon
+  onConfirm: () => void
+}) {
+  const [armed, setArmed] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
+
+  return (
+    <button
+      type="button"
+      className="mac-pill mac-pill-icon"
+      data-armed={armed || undefined}
+      onClick={() => {
+        clearTimeout(timer.current)
+        if (armed) {
+          setArmed(false)
+          onConfirm()
+        } else {
+          setArmed(true)
+          timer.current = setTimeout(() => setArmed(false), 3000)
+        }
+      }}
+    >
+      <Icon size={11} strokeWidth={2.2} aria-hidden />
+      {armed ? confirm : idle}
+    </button>
   )
 }
 
@@ -442,7 +1027,7 @@ function Switch({
 function Marker({ label, tip }: { label: string; tip: string }) {
   return (
     <span className="mac-marker" title={tip}>
-      <FolderOpen size={11} strokeWidth={1.8} aria-hidden />
+      <Folder size={10} strokeWidth={1.8} aria-hidden />
       {label}
     </span>
   )

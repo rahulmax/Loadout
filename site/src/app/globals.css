@@ -472,7 +472,7 @@
   }
   .stage-panel {
     width: min(100%, 400px);
-    height: 580px;
+    height: 640px;
   }
   .stage-caption {
     margin-top: 1.25rem;
@@ -582,7 +582,7 @@
   }
   .plate-panel {
     width: min(100%, 380px);
-    height: 540px;
+    height: 600px;
   }
 
   /* ---------- How it works ---------- */
@@ -768,6 +768,18 @@
     font: 500 0.68rem var(--font-mono);
     letter-spacing: 0.08em;
     text-transform: uppercase;
+  }
+  .field-table tbody th {
+    padding: 0.9rem 1rem 0.9rem 0;
+    border-bottom: 1px solid var(--rule);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    font-weight: 500;
+    letter-spacing: normal;
+    text-transform: none;
+    vertical-align: top;
+    white-space: nowrap;
   }
   .field-table td {
     padding: 0.9rem 1rem 0.9rem 0;

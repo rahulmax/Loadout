@@ -17,7 +17,7 @@ const mono = Geist_Mono({
 export const metadata: Metadata = {
   title: 'Loadout · Decide what Claude carries',
   description:
-    'A macOS menu bar panel that switches Claude Code plugins, skills and MCP servers at the level Claude actually reads, so what you turn off stays out of context.',
+    'A macOS menu bar panel that switches plugins, skills and MCP servers for all projects or one project, so what you turn off stays out of context.',
 }
 
 export const viewport: Viewport = {

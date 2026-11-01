@@ -7,35 +7,35 @@
 */
 const COSTS = [
   {
-    state: 'On',
+    state: 'Auto',
     cost: '~100 tokens',
     note: 'Name and description. The body loads only when the skill is used',
     width: 100,
   },
   {
-    state: 'Name',
+    state: 'Name only',
     cost: '~5 tokens',
-    note: 'Just the name. Claude can still find it',
+    note: 'Just the name. The agent can still find it',
     width: 5,
   },
   {
-    state: 'Slash',
+    state: 'Manual',
     cost: '0',
-    note: 'Hidden from the model. You call it with /name',
+    note: 'Hidden from the agent. You call it with /name',
     width: 0,
   },
   {
     state: 'Off',
     cost: '0',
-    note: 'Gone from the model and from /',
+    note: 'Hidden everywhere',
     width: 0,
   },
 ]
 
 /* The same set of 28, all on versus all name-only. */
 const SET = [
-  { label: '28 skills, all On', cost: '~2,800 tokens' },
-  { label: '28 skills, all Name', cost: '~140 tokens' },
+  { label: '28 skills, all Auto', cost: '~2,800 tokens' },
+  { label: '28 skills, all Name only', cost: '~140 tokens' },
 ]
 
 export function SkillCostFigure() {
@@ -73,7 +73,7 @@ export function SkillCostFigure() {
       <p className="cost-foot">
         Measured on a real set of 28 skills. Descriptions run from 50 to 1,400
         characters, and Claude Code caps each at 1,536. On a large set it may
-        also trim the least-used descriptions to fit its own budget, so On is a
+        also trim the least-used descriptions to fit its own budget, so Auto is a
         ceiling.
       </p>
     </figure>
@@ -83,11 +83,11 @@ export function SkillCostFigure() {
 const FLOW = [
   {
     title: 'You flip a switch',
-    body: 'Plugin, skill state or MCP server, in the menu bar.',
+    body: 'A tool or a skill, for all projects or one, in the menu bar.',
   },
   {
     title: 'Loadout writes the field',
-    body: 'Your user settings.json. Temp file, then an atomic swap.',
+    body: 'Your user settings, or the project’s own file. Temp file, then an atomic swap.',
   },
   {
     title: '/reload-plugins is copied',
