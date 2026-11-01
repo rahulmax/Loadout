@@ -136,11 +136,13 @@ enum ProjectCatalog {
     /// On a case-insensitive disk `Acme` and `acme` are one folder that history
     /// lists twice. The same file number shows it. Sorted input means the recent one stays.
     private static func uniqueFolders(_ projects: [KnownProject]) -> [KnownProject] {
-        var seen = Set<UInt64>()
+        var seen = Set<String>()
         return projects.filter { project in
-            guard let attributes = try? FileManager.default.attributesOfItem(atPath: project.path),
-                  let number = attributes[.systemFileNumber] as? UInt64 else { return true }
-            return seen.insert(number).inserted
+            // Plain stat on purpose. FileManager's attributes also read extended
+            // attributes, and that stalls on folders macOS protects, like Downloads.
+            var info = stat()
+            guard stat(project.path, &info) == 0 else { return true }
+            return seen.insert("\(info.st_dev):\(info.st_ino)").inserted
         }
     }
 

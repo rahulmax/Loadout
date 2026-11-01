@@ -37,6 +37,8 @@ final class AppStore: ObservableObject {
     private var undoStack: [UndoEntry] = []
     private var lastDiscovery: Date?
     private let readOnly: Bool
+    private var catalogLoading = false
+    private var catalogStale = false
 
     private static let projectCap = 200
     /// `claude mcp list` health-checks every server, so it isn't run on every open.
@@ -98,10 +100,40 @@ final class AppStore: ObservableObject {
         do {
             let loader = InventoryLoader(paths: paths, state: engine.state)
             inventory = try loader.load(scope: scope)
-            projects = Array(ProjectCatalog.load(paths, state: engine.state).prefix(Self.projectCap))
             lastError = nil
         } catch {
             lastError = "Could not read settings: \(error.localizedDescription)"
+        }
+        loadProjects()
+    }
+
+    /// The list touches every folder in the tools' history, any of which can be slow or
+    /// protected, so it never runs on the main thread. Snapshots stay synchronous.
+    private func loadProjects() {
+        if readOnly {
+            projects = Array(ProjectCatalog.load(paths, state: engine.state).prefix(Self.projectCap))
+            return
+        }
+        guard !catalogLoading else {
+            catalogStale = true
+            return
+        }
+        catalogLoading = true
+        let paths = paths
+        let state = engine.state
+        let cap = Self.projectCap
+        Task.detached(priority: .userInitiated) {
+            let found = Array(ProjectCatalog.load(paths, state: state).prefix(cap))
+            await MainActor.run { self.finishLoadingProjects(found) }
+        }
+    }
+
+    private func finishLoadingProjects(_ found: [KnownProject]) {
+        projects = found
+        catalogLoading = false
+        if catalogStale {
+            catalogStale = false
+            loadProjects()
         }
     }
 
