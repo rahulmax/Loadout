@@ -133,7 +133,7 @@ enum ProjectCatalog {
         return uniqueFolders(sorted)
     }
 
-    /// On a case-insensitive disk `Synacor` and `synacor` are one folder that history
+    /// On a case-insensitive disk `Acme` and `acme` are one folder that history
     /// lists twice. The same file number shows it. Sorted input means the recent one stays.
     private static func uniqueFolders(_ projects: [KnownProject]) -> [KnownProject] {
         var seen = Set<UInt64>()
