@@ -23,6 +23,18 @@ enum Harness: String, CaseIterable, Codable, Identifiable {
         case .cursor: return "Cursor"
         }
     }
+
+    var shortLabel: String { self == .claude ? "Claude" : label }
+
+    /// Files in a folder that say it's a project for this tool.
+    var projectMarkers: [String] {
+        switch self {
+        case .claude: return [".claude", "CLAUDE.md", ".mcp.json"]
+        case .codex: return [".codex", "AGENTS.md"]
+        case .antigravity: return [".agents", "GEMINI.md"]
+        case .cursor: return [".cursor", ".cursorrules"]
+        }
+    }
 }
 
 /// Every path Loadout reads or writes, rooted at a home folder so tests can use a fake one.
@@ -449,6 +461,8 @@ struct KnownProject: Identifiable, Hashable {
     var name: String { (path as NSString).lastPathComponent }
     var displayPath: String { (path as NSString).abbreviatingWithTildeInPath }
     let lastUsed: Date?
+    /// False for folders a tool was merely opened in. They stay out of the picker.
+    var isProject = true
 }
 
 // MARK: - Saved state
@@ -498,8 +512,10 @@ struct AppState: Codable {
     }
 
     func manages(_ harness: Harness, paths: Paths) -> Bool {
-        if harness == .claude { return true }
-        if let choice = harnesses[harness.rawValue] { return choice }
+        harnesses[harness.rawValue] ?? isInstalled(harness, paths: paths)
+    }
+
+    func isInstalled(_ harness: Harness, paths: Paths) -> Bool {
         let fm = FileManager.default
         switch harness {
         case .claude: return true

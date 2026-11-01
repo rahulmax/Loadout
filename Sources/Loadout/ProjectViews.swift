@@ -1,6 +1,64 @@
 import SwiftUI
 import AppKit
 
+// MARK: - Which tools to show
+
+/// The top-level filter. It only changes what Loadout shows and changes: a hidden tool
+/// keeps running with its settings as they are.
+struct HarnessBar: View {
+    @ObservedObject var store: AppStore
+
+    var body: some View {
+        let available = store.availableHarnesses
+        if available.count > 1 {
+            HStack(spacing: 4) {
+                ForEach(available) { harness in
+                    chip(harness)
+                }
+            }
+            .padding(.horizontal, Theme.rowInset)
+            .padding(.bottom, 8)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Tools to show")
+        }
+    }
+
+    private func chip(_ harness: Harness) -> some View {
+        let on = store.managedHarnesses.contains(harness)
+        let onlyOne = on && store.managedHarnesses.count == 1
+        return Button {
+            store.setManaged(harness, !on)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .opacity(on ? 1 : 0)
+                Text(verbatim: harness.shortLabel)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(on ? .primary : .secondary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(on ? Theme.hoverStrong : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(Theme.hairline, lineWidth: on ? 0 : 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableButtonStyle())
+        .disabled(onlyOne)
+        .help(onlyOne ? "At least one tool has to stay on." : "Hidden tools keep working. Loadout just won't show or change them.")
+        .accessibilityLabel(harness.label)
+        .accessibilityValue(on ? "Shown" : "Hidden")
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
 // MARK: - Scope bar
 
 /// Always says what the switches below will change, in words.

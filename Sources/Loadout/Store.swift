@@ -24,7 +24,10 @@ final class AppStore: ObservableObject {
 
     @Published private(set) var scope: Scope = .allProjects
     @Published private(set) var inventory = Inventory()
+    /// Real projects, for the picker.
     @Published private(set) var projects: [KnownProject] = []
+    /// Every folder the tools have opened, so a running server still finds its group.
+    @Published private(set) var allFolders: [String] = []
     @Published private(set) var note: Note?
     @Published private(set) var discovery: Discovery = .running
     @Published private(set) var canUndo = false
@@ -96,6 +99,11 @@ final class AppStore: ObservableObject {
         Harness.allCases.filter { engine.state.manages($0, paths: paths) }
     }
 
+    /// The tools worth offering: installed, or already turned on.
+    var availableHarnesses: [Harness] {
+        Harness.allCases.filter { engine.state.isInstalled($0, paths: paths) || managedHarnesses.contains($0) }
+    }
+
     func reload() {
         do {
             let loader = InventoryLoader(paths: paths, state: engine.state)
@@ -111,7 +119,7 @@ final class AppStore: ObservableObject {
     /// protected, so it never runs on the main thread. Snapshots stay synchronous.
     private func loadProjects() {
         if readOnly {
-            projects = Array(ProjectCatalog.load(paths, state: engine.state).prefix(Self.projectCap))
+            applyCatalog(ProjectCatalog.load(paths, state: engine.state))
             return
         }
         guard !catalogLoading else {
@@ -121,15 +129,19 @@ final class AppStore: ObservableObject {
         catalogLoading = true
         let paths = paths
         let state = engine.state
-        let cap = Self.projectCap
         Task.detached(priority: .userInitiated) {
-            let found = Array(ProjectCatalog.load(paths, state: state).prefix(cap))
+            let found = ProjectCatalog.load(paths, state: state)
             await MainActor.run { self.finishLoadingProjects(found) }
         }
     }
 
+    private func applyCatalog(_ found: [KnownProject]) {
+        projects = Array(found.filter(\.isProject).prefix(Self.projectCap))
+        allFolders = found.map(\.path)
+    }
+
     private func finishLoadingProjects(_ found: [KnownProject]) {
-        projects = found
+        applyCatalog(found)
         catalogLoading = false
         if catalogStale {
             catalogStale = false
@@ -319,6 +331,8 @@ final class AppStore: ObservableObject {
     }
 
     func setManaged(_ harness: Harness, _ on: Bool) {
+        // With nothing shown the panel would be empty and look broken.
+        guard on || managedHarnesses != [harness] else { return }
         engine.state.harnesses[harness.rawValue] = on
         saveState()
         reload()

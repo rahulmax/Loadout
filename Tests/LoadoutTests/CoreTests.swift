@@ -961,6 +961,104 @@ final class ProjectCatalogTests: XCTestCase {
     }
 }
 
+final class ProjectListTests: XCTestCase {
+    private func folder(_ f: Fixture, _ name: String, marker: String? = nil, under root: URL? = nil) throws -> String {
+        let url = (root ?? f.root.appendingPathComponent("work")).appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        if let marker { try f.write(url.appendingPathComponent(marker), "x") }
+        return url.path
+    }
+
+    private func flags(_ f: Fixture, _ folders: [String], state: AppState) throws -> [String: Bool] {
+        try f.writeJSON(f.paths.claudeJson, ["projects": Dictionary(uniqueKeysWithValues: folders.map { ($0, [String: Any]()) })])
+        let found = ProjectCatalog.load(f.paths, state: state, scratchFolders: [])
+        return Dictionary(uniqueKeysWithValues: found.map { ($0.path, $0.isProject) })
+    }
+
+    func testOnlyFoldersWithAConfigFileCount() throws {
+        let f = try Fixture()
+        let plain = try folder(f, "plain")
+        let dotClaude = try folder(f, "a", marker: ".claude/settings.json")
+        let memory = try folder(f, "b", marker: "CLAUDE.md")
+        let servers = try folder(f, "c", marker: ".mcp.json")
+        let result = try flags(f, [plain, dotClaude, memory, servers], state: AppState())
+        XCTAssertEqual(result, [plain: false, dotClaude: true, memory: true, servers: true])
+    }
+
+    func testMarkersFollowTheToolsShown() throws {
+        let f = try Fixture()
+        let codex = try folder(f, "codex", marker: "AGENTS.md")
+        let claude = try folder(f, "claude", marker: "CLAUDE.md")
+        var state = AppState()
+        state.harnesses = ["claude": true, "codex": false]
+        XCTAssertEqual(try flags(f, [codex, claude], state: state), [codex: false, claude: true])
+        state.harnesses = ["claude": false, "codex": true]
+        XCTAssertEqual(try flags(f, [codex, claude], state: state), [codex: true, claude: false])
+    }
+
+    func testChosenFolderAlwaysCounts() throws {
+        let f = try Fixture()
+        let plain = try folder(f, "plain")
+        var state = AppState()
+        state.extraProjects = [plain]
+        XCTAssertEqual(try flags(f, [plain], state: state), [plain: true])
+    }
+
+    /// Looking inside these can bring up a macOS permission prompt.
+    func testProtectedFoldersAreNotLookedInside() throws {
+        let f = try Fixture()
+        let downloads = f.home.appendingPathComponent("Downloads")
+        let inside = try folder(f, "thing", marker: "CLAUDE.md", under: downloads)
+        XCTAssertEqual(try flags(f, [inside], state: AppState()), [inside: false])
+        var state = AppState()
+        state.extraProjects = [inside]
+        XCTAssertEqual(try flags(f, [inside], state: state), [inside: true])
+    }
+}
+
+final class ShownToolsTests: XCTestCase {
+    private func twoTools() throws -> Fixture {
+        let f = try Fixture()
+        try f.writeJSON(f.paths.claudeJson, ["mcpServers": ["alpha": ["command": "/usr/bin/false"]]])
+        try f.write(f.paths.codexConfig, "[mcp_servers.beta]\ncommand = \"/usr/bin/false\"\n")
+        return f
+    }
+
+    private func load(_ f: Fixture, _ harnesses: [String: Bool]) throws -> Inventory {
+        var state = AppState()
+        state.harnesses = harnesses
+        return try InventoryLoader(paths: f.paths, state: state).load(scope: .allProjects)
+    }
+
+    func testHidingClaudeLeavesOnlyTheOthers() throws {
+        let f = try twoTools()
+        let before = try String(contentsOf: f.paths.claudeSettings, encoding: .utf8)
+        let inventory = try load(f, ["claude": false, "codex": true])
+        XCTAssertEqual(inventory.services.map(\.name), ["Beta"])
+        XCTAssertFalse(inventory.needsMigration, "The switch is about Claude, so it goes with it")
+        XCTAssertEqual(try String(contentsOf: f.paths.claudeSettings, encoding: .utf8), before)
+    }
+
+    func testHidingCodexLeavesClaude() throws {
+        let f = try twoTools()
+        XCTAssertEqual(try load(f, ["claude": true, "codex": false]).services.map(\.name), ["Alpha"])
+    }
+
+    func testClaudeIsShownUntilTurnedOff() throws {
+        let f = try Fixture()
+        XCTAssertTrue(AppState().manages(.claude, paths: f.paths))
+    }
+
+    @MainActor func testLastToolCantBeTurnedOff() throws {
+        let f = try twoTools()
+        let store = AppStore(readOnly: true, home: f.home)
+        for harness in Harness.allCases where harness != .claude { store.setManaged(harness, false) }
+        XCTAssertEqual(store.managedHarnesses, [.claude])
+        store.setManaged(.claude, false)
+        XCTAssertEqual(store.managedHarnesses, [.claude])
+    }
+}
+
 final class DeadOverrideTests: XCTestCase {
     /// Removing them is the user's click, so loading must never touch the file.
     @MainActor func testOpeningTheAppLeavesThemAlone() throws {

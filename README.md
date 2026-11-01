@@ -22,7 +22,11 @@ The picker at the top of the panel sets what every switch changes: **All project
 - **Tools** — one row per service, grouped by name and URL host across plugins, MCP servers, claude.ai connectors, Codex and Antigravity and Cursor. The main switch changes every tool that has the service; the disclosure shows each tool's own switch, why anything is locked and how to fix it, what's set up where, and the plugin's skills with their token cost. A **This project** tag and reset icon mark what a project overrides. **Add to this project** copies a server to Codex or Antigravity for that project, only if its config holds no secrets. Every connector on the account is found by asking `claude`, so nothing depends on a built-in list.
 - **Skills** — **Auto** (the agent can pick it), **Manual** (only when you type `/name`), **Off** (hidden everywhere), with the legend always on screen. **Name only** is on right-click. Each row shows its token cost. Skills that set `disable-model-invocation` offer Manual or Off. Plugin skills follow their plugin, so they're summarised with a link to Tools. Old `plugin:skill` keys from earlier versions are flagged, with a button to remove them.
 
-The footer says what was saved, and has **Undo** for each change this session. Changes also copy `/reload-plugins` for open sessions; new sessions pick them up on their own. The **…** menu holds which tools to manage, presets (save the current set, apply it to any scope) and restore.
+The row at the top picks which tools to show: Claude, Codex, Antigravity, Cursor. It changes what Loadout shows and edits, not the tools themselves. A hidden tool keeps running with its settings as they are, and the main switch on a row leaves it alone.
+
+The project list shows folders with a config file for a tool you're showing: `.claude`, `CLAUDE.md` or `.mcp.json` for Claude, `.codex`, `AGENTS.md` or trust in Codex, `.agents` or `GEMINI.md` for Antigravity, `.cursor` or `.cursorrules` for Cursor. **Choose folder…** adds any other folder for good. Desktop, Documents and Downloads aren't looked inside, since that can bring up a macOS permission prompt, so folders there need Choose folder too.
+
+The footer says what was saved, and has **Undo** for each change this session. Changes also copy `/reload-plugins` for open sessions; new sessions pick them up on their own. The **…** menu holds presets (save the current set, apply it to any scope) and restore.
 
 ## Per project, per tool
 
@@ -43,7 +47,7 @@ Loadout never makes this change alone. A banner explains it and waits for **Swit
 
 Single SwiftUI executable wrapped into a `.app` bundle with `LSUIElement=true`. The UI is a `MenuBarExtra` with `.window` style.
 
-**The tools' own files stay the source of truth.** Loadout keeps no profile of on/off choices that could drift, and reads everything back on each open. Its own `~/Library/Application Support/Loadout/state.json` holds only what no tool's config can: which tools to manage, presets, connector URLs, Antigravity servers turned off in a project, and where the backup is.
+**The tools' own files stay the source of truth.** Loadout keeps no profile of on/off choices that could drift, and reads everything back on each open. Its own `~/Library/Application Support/Loadout/state.json` holds only what no tool's config can: which tools to show, presets, connector URLs, Antigravity servers turned off in a project, and where the backup is.
 
 **Files:**
 - `Sources/Loadout/App.swift` — entry point, design tokens, panel shell, tab bar, debug snapshots

@@ -110,7 +110,14 @@ enum ProjectCatalog {
             candidates.formUnion(projects.keys)
         }
         let codex = TOMLDocument((try? String(contentsOf: paths.codexConfig, encoding: .utf8)) ?? "")
-        candidates.formUnion(codex.children(of: "projects"))
+        let trustedInCodex = Set(codex.children(of: "projects"))
+        candidates.formUnion(trustedInCodex)
+        let shown = Harness.allCases.filter { state.manages($0, paths: paths) }
+        let markers = shown.flatMap(\.projectMarkers)
+        // Looking inside these can bring up a macOS permission prompt, so only a folder
+        // the user chose counts there.
+        let protected = ["Desktop", "Documents", "Downloads", "Library/Mobile Documents"]
+            .map { paths.home.appendingPathComponent($0).path + "/" }
 
         let home = canonicalPath(paths.home.path)
         let excluded = scratchFolders + [paths.appSupport.path + "/"]
@@ -120,7 +127,11 @@ enum ProjectCatalog {
             guard path != home, path != "/",
                   !excluded.contains(where: { path.hasPrefix($0) || path + "/" == $0 }),
                   fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { continue }
-            result.append(KnownProject(path: path, lastUsed: lastUsed(path, paths: paths)))
+            let isProject = state.extraProjects.contains(path)
+                || (shown.contains(.codex) && trustedInCodex.contains(path))
+                || (!protected.contains { path.hasPrefix($0) }
+                    && markers.contains { fm.fileExists(atPath: (path as NSString).appendingPathComponent($0)) })
+            result.append(KnownProject(path: path, lastUsed: lastUsed(path, paths: paths), isProject: isProject))
         }
         let sorted = result.sorted {
             switch ($0.lastUsed, $1.lastUsed) {
@@ -207,7 +218,8 @@ struct InventoryLoader {
         let settings = try claudeSettings(scope: scope)
         var controls: [Control] = []
         var skillsByKey: [String: [PluginSkillInfo]] = [:]
-        controls += try claudeControls(scope: scope, settings: settings, pluginSkills: &skillsByKey)
+        let showsClaude = state.manages(.claude, paths: paths)
+        if showsClaude { controls += try claudeControls(scope: scope, settings: settings, pluginSkills: &skillsByKey) }
         if state.manages(.codex, paths: paths) { controls += codexControls(scope: scope) }
         if state.manages(.antigravity, paths: paths) { controls += antigravityControls(scope: scope) }
         if state.manages(.cursor, paths: paths) { controls += cursorControls(scope: scope) }
@@ -220,8 +232,8 @@ struct InventoryLoader {
         inventory.services = services
         inventory.skills = loadSkills(scope: scope, settings: settings)
         let overrides = settings.user["skillOverrides"] as? [String: String] ?? [:]
-        inventory.deadOverrideKeys = overrides.keys.filter { $0.contains(":") }.sorted()
-        inventory.needsMigration = !settings.hasUserAllowlist
+        inventory.deadOverrideKeys = showsClaude ? overrides.keys.filter { $0.contains(":") }.sorted() : []
+        inventory.needsMigration = showsClaude && !settings.hasUserAllowlist
         return inventory
     }
 

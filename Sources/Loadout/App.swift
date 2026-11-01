@@ -401,7 +401,7 @@ struct MenuView: View {
     }
 
     private var knownProjectPaths: [String] {
-        var paths = store.projects.map(\.path)
+        var paths = store.allFolders
         if let selected = store.scope.projectPath, !paths.contains(selected) { paths.append(selected) }
         return paths
     }
@@ -409,6 +409,7 @@ struct MenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            HarnessBar(store: store)
             ScopeBar(store: store, picking: $picking)
 
             if picking {
@@ -494,15 +495,6 @@ struct MenuView: View {
 
     private var optionsMenu: some View {
         Menu {
-            Section("Tools to manage") {
-                ForEach(Harness.allCases) { harness in
-                    Toggle(harness.label, isOn: Binding(
-                        get: { store.managedHarnesses.contains(harness) },
-                        set: { store.setManaged(harness, $0) }
-                    ))
-                    .disabled(harness == .claude)
-                }
-            }
             Section("Presets") {
                 ForEach(store.state.presets) { preset in
                     Menu(preset.name) {
