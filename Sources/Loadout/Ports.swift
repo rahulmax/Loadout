@@ -774,11 +774,9 @@ struct PortsSection: View {
     private static let perRow = 3
     private static let cellHeight: CGFloat = 26
     private static let cellGap: CGFloat = 4
-    private static let labelHeight: CGFloat = 16
-    private static let groupGap: CGFloat = 6
     /// Past this the list scrolls, so a lot of servers can't push the tools off the panel.
     /// Between two rows on purpose: a row cut in half says there's more.
-    private static let maxListHeight: CGFloat = 160
+    private static let maxListHeight: CGFloat = 133
 
     private var groups: [PortGroup] {
         PortGroup.make(from: store.ports, known: knownProjects, home: NSHomeDirectory())
@@ -795,12 +793,8 @@ struct PortsSection: View {
 
     /// The cells are a fixed height, so the list's height is known without measuring.
     private var listHeight: CGFloat {
-        let groupHeights = visible.map { group -> CGFloat in
-            let rows = (group.ports.count + Self.perRow - 1) / Self.perRow
-            let cells = CGFloat(rows) * Self.cellHeight + CGFloat(rows - 1) * Self.cellGap
-            return cells + (filtered ? 0 : Self.labelHeight)
-        }
-        return groupHeights.reduce(0, +) + CGFloat(max(0, groupHeights.count - 1)) * Self.groupGap
+        let rows = (visiblePorts.count + Self.perRow - 1) / Self.perRow
+        return CGFloat(rows) * Self.cellHeight + CGFloat(max(0, rows - 1)) * Self.cellGap
     }
 
     private var status: String? {
@@ -863,12 +857,9 @@ struct PortsSection: View {
             Spacer(minLength: 6)
             filterButton
             if visiblePorts.count > 1 {
-                TwoStepConfirmButton(
-                    idleLabel: filtered ? "Kill \(visiblePorts.count)" : "Kill all",
-                    confirmLabel: filtered ? "Confirm kill \(visiblePorts.count)" : "Confirm kill all",
-                    systemImage: "xmark",
-                    action: { store.kill(group: visiblePorts) }
-                )
+                let what = filtered ? "the \(visiblePorts.count) servers shown" : "all \(visiblePorts.count) servers"
+                TwoStepIconButton(help: "Kill \(what)", action: { store.kill(group: visiblePorts) })
+                    .accessibilityLabel("Kill \(what)")
             }
         }
         .frame(height: 24)
@@ -897,93 +888,48 @@ struct PortsSection: View {
         }
     }
 
+    /// One grid, ordered by project, so a row fills up before the next one starts.
     private var list: some View {
-        VStack(alignment: .leading, spacing: Self.groupGap) {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: Self.cellGap), count: Self.perRow),
+            spacing: Self.cellGap
+        ) {
             ForEach(visible) { group in
-                VStack(alignment: .leading, spacing: 0) {
-                    // The picker at the top already names a chosen project.
-                    if !filtered {
-                        PortGroupLabel(
-                            group: group,
-                            onStop: { store.kill(group: group.ports) },
-                            onOpen: group.path.map { path in { onOpenProject(path) } }
-                        )
-                        .frame(height: Self.labelHeight)
-                    }
-                    LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible(), spacing: Self.cellGap), count: Self.perRow),
-                        spacing: Self.cellGap
-                    ) {
-                        ForEach(group.ports) { entry in
-                            PortCell(
-                                entry: entry,
-                                location: group.path == nil ? (entry.displayPath ?? entry.processName) : group.subfolder(of: entry),
-                                health: store.health[entry.port] ?? .unknown,
-                                pending: store.pending[entry.port],
-                                onKill: { store.kill(entry) },
-                                onRestart: { store.restart(entry) }
-                            )
-                            .frame(height: Self.cellHeight)
-                            .transition(.opacity)
-                        }
-                    }
+                ForEach(group.ports) { entry in
+                    PortCell(
+                        entry: entry,
+                        group: group,
+                        // The picker at the top already names a chosen project.
+                        namesProject: !filtered,
+                        location: group.path == nil ? (entry.displayPath ?? entry.processName) : group.subfolder(of: entry),
+                        health: store.health[entry.port] ?? .unknown,
+                        pending: store.pending[entry.port],
+                        onKill: { store.kill(entry) },
+                        onRestart: { store.restart(entry) },
+                        onKillGroup: { store.kill(group: group.ports) },
+                        onOpenProject: group.path.map { path in { onOpenProject(path) } }
+                    )
+                    .frame(height: Self.cellHeight)
+                    .transition(.opacity)
                 }
             }
         }
     }
 }
 
-/// A project's name above its servers. The name opens the project's tools. Stopping all
-/// of them appears on hover.
-private struct PortGroupLabel: View {
-    let group: PortGroup
-    let onStop: () -> Void
-    let onOpen: (() -> Void)?
-
-    @State private var hovering = false
-
-    private var name: some View {
-        Text(verbatim: group.name)
-            .font(.system(size: 10.5, weight: .medium))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-    }
-
-    var body: some View {
-        HStack(spacing: 4) {
-            if let onOpen {
-                Button(action: onOpen) { name }
-                    .buttonStyle(.plain)
-                    .help(Text(verbatim: "Tools for \(group.displayPath ?? group.name)"))
-                    .accessibilityLabel("Tools for \(group.name)")
-            } else {
-                name
-            }
-            Spacer(minLength: 4)
-            if hovering && group.ports.count > 1 {
-                TwoStepIconButton(
-                    help: "Kill the \(group.ports.count) servers in \(group.name)",
-                    action: onStop
-                )
-                .accessibilityLabel("Kill the \(group.ports.count) servers in \(group.name)")
-            }
-        }
-        .padding(.leading, Theme.rowPadding)
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .accessibilityAction(named: "Kill \(group.ports.count) servers", onStop)
-    }
-}
-
 struct PortCell: View {
     let entry: PortEntry
-    /// Subfolder within the group's project. The group label already names the project.
+    let group: PortGroup
+    /// Off when a project is chosen, so the cell shows the framework instead.
+    let namesProject: Bool
+    /// Subfolder within the group's project.
     var location: String?
     let health: PortHealth
     let pending: PortsStore.PendingAction?
     let onKill: () -> Void
     let onRestart: () -> Void
+    let onKillGroup: () -> Void
+    let onOpenProject: (() -> Void)?
 
     @State private var hovering = false
     @FocusState private var focused: Part?
@@ -996,8 +942,10 @@ struct PortCell: View {
     /// Keyboard users get the same actions as the pointer.
     private var showsActions: Bool { pending == nil && (hovering || focused != nil) }
 
+    private var caption: String? { namesProject ? group.name : entry.framework }
+
     private var details: String {
-        var lines = [address]
+        var lines = [address, group.displayPath ?? group.name]
         if let framework = entry.framework { lines.append(framework) }
         if let location { lines.append(location) }
         var process = [entry.processName, "PID \(entry.pid)"]
@@ -1018,8 +966,8 @@ struct PortCell: View {
                     Text(verbatim: ":\(entry.port)")
                         .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
                         .lineLimit(1)
-                    if !showsActions, pending == nil, let framework = entry.framework {
-                        Text(verbatim: framework)
+                    if !showsActions, pending == nil, let caption {
+                        Text(verbatim: caption)
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -1036,6 +984,7 @@ struct PortCell: View {
             .accessibilityValue(details)
             .accessibilityAction(named: "Restart") { if entry.canRestart { onRestart() } }
             .accessibilityAction(named: "Kill", onKill)
+            .accessibilityAction(named: "Tools for \(group.name)") { onOpenProject?() }
 
             if pending != nil {
                 ProgressView().controlSize(.mini).padding(.trailing, 5)
@@ -1072,6 +1021,15 @@ struct PortCell: View {
             Button("Open \(address)", action: open)
             Button("Restart", action: onRestart).disabled(!entry.canRestart || pending != nil)
             Button("Kill", action: onKill).disabled(pending != nil)
+            if onOpenProject != nil || group.ports.count > 1 {
+                Divider()
+            }
+            if let onOpenProject {
+                Button("Tools for \(group.name)", action: onOpenProject)
+            }
+            if group.ports.count > 1 {
+                Button("Kill the \(group.ports.count) servers in \(group.name)", action: onKillGroup)
+            }
         }
     }
 }
