@@ -117,6 +117,7 @@ Requires macOS 14+.
 ## Known limitations
 
 - **Not notarized.** Releases are ad-hoc signed, so macOS blocks the first launch. Use **Open Anyway** in System Settings → Privacy & Security, or run `xattr -d com.apple.quarantine /Applications/Loadout.app`.
+- **Hiding Claude doesn't hide its skills.** The Skills tab still lists them, a change there still writes to Claude's settings, and the footer can still mention `/reload-plugins`.
 - **Cursor is read only.** It keeps MCP on/off in its own app state. It still gets skills through `.agents/skills`.
 - **Antigravity has no working per-project off.** `disabled: true` in a workspace file didn't stop the server when tested, so off removes the entry and Loadout remembers it. A server in the global file stays on in every project until it's off under All projects.
 - **Antigravity plugins are global.** Not offered per project.

@@ -808,3 +808,44 @@ button.mac-pill {
     display: none;
   }
 }
+
+/* The tool row: what Loadout shows, above the project it applies to. */
+.mac-harnesses {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px 8px;
+}
+.mac-tool {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--mac-fill-2);
+  color: var(--mac-text);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.mac-tool svg {
+  flex-shrink: 0;
+}
+.mac-tool[aria-pressed='false'] {
+  border-color: var(--mac-sep);
+  background: transparent;
+  color: var(--mac-text-2);
+}
+.mac-tool[aria-pressed='false'] svg {
+  visibility: hidden;
+}
+.mac-tool:disabled {
+  cursor: default;
+}
+.mac-tool:focus-visible {
+  outline: 2px solid var(--mac-accent, currentColor);
+  outline-offset: 1px;
+}

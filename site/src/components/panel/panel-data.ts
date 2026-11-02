@@ -12,6 +12,14 @@ export type SkillState = 'auto' | 'manual' | 'off'
 
 export type Harness = 'Claude Code' | 'Codex' | 'Antigravity' | 'Cursor'
 
+/** The tool row at the top of the panel. */
+export const HARNESSES: { id: Harness; label: string }[] = [
+  { id: 'Claude Code', label: 'Claude' },
+  { id: 'Codex', label: 'Codex' },
+  { id: 'Antigravity', label: 'Antigravity' },
+  { id: 'Cursor', label: 'Cursor' },
+]
+
 /** The scope picker's value: null is All projects. */
 export type Scope = string | null
 
@@ -19,6 +27,8 @@ export interface Project {
   id: string
   name: string
   path: string
+  /** Tools with a config file in this folder. The picker lists it if one is shown. */
+  tools: Harness[]
 }
 
 export interface Port {
@@ -62,9 +72,9 @@ export interface Skill {
 }
 
 export const PROJECTS: Project[] = [
-  { id: 'tea-house', name: 'tea-house', path: '~/code/tea-house' },
-  { id: 'field-notes', name: 'field-notes', path: '~/code/field-notes' },
-  { id: 'kiln', name: 'kiln', path: '~/code/kiln' },
+  { id: 'tea-house', tools: ['Claude Code'], name: 'tea-house', path: '~/code/tea-house' },
+  { id: 'field-notes', tools: ['Claude Code', 'Codex'], name: 'field-notes', path: '~/code/field-notes' },
+  { id: 'kiln', tools: ['Codex', 'Antigravity'], name: 'kiln', path: '~/code/kiln' },
 ]
 
 export const PORTS: Port[] = [
@@ -146,8 +156,9 @@ export const SERVICES: Service[] = [
     controls: [
       { harness: CC, label: 'Plugin' },
       { harness: CC, label: 'MCP server' },
+      { harness: 'Antigravity', label: 'MCP server' },
     ],
-    on: [false, false],
+    on: [false, false, false],
   },
   {
     id: 'vercel',
@@ -187,7 +198,7 @@ export const SERVICES: Service[] = [
 export const SERVICE_OVERRIDES: Record<string, Record<string, boolean[]>> = {
   'tea-house': {
     figma: [false, false, true],
-    playwright: [true, true],
+    playwright: [true, true, true],
     slack: [false],
   },
   'field-notes': { github: [false, false] },

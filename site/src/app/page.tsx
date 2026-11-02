@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUpRight } from 'lucide-react'
 import { FlowFigure, SkillCostFigure } from '@/components/figures'
 import { Panel } from '@/components/panel/panel'
-import type { TabId } from '@/components/panel/panel-data'
+import type { Harness, TabId } from '@/components/panel/panel-data'
 import { Tabs } from '@/components/tabs'
 import { ThemeToggle } from '@/components/theme-toggle'
 
@@ -33,6 +33,7 @@ const FEATURES: {
   title: string
   body: string
   points: string[]
+  shown?: Harness[]
 }[] = [
   {
     tab: 'ports',
@@ -69,6 +70,19 @@ const FEATURES: {
       'Writes skillOverrides to your user settings or the project’s',
       'Turn all off, with a two-step confirm',
     ],
+  },
+  {
+    tab: 'tools',
+    kanji: '絞',
+    name: 'Focus',
+    title: 'Only the tools you use.',
+    body: 'A row at the top of the panel turns Claude, Codex, Antigravity and Cursor on or off in Loadout, and Tools and the project list follow. It changes what Loadout shows and edits, not the tools: a hidden tool keeps running as it is.',
+    points: [
+      'The main switch on a row leaves hidden tools alone',
+      'The project list shows folders with a config file for a tool you’re showing',
+      'Choose folder adds any other folder for good',
+    ],
+    shown: ['Claude Code', 'Codex'],
   },
 ]
 
@@ -287,16 +301,16 @@ export default function Home() {
             <BandLabel numeral="01" label="What it does" />
             <div className="frame-main">
               <BandHead title="Three tabs. Every switch has a scope.">
-                Click the menu bar icon and the panel opens on Ports. Pick
-                All projects or one project at the top, and the switches below
-                change that scope. Each change saves straight away, says what
+                Click the menu bar icon and the panel opens on Ports. Choose
+                which tools to show, pick All projects or one project, and the
+                switches below change that scope. Each change saves straight away, says what
                 it saved, and copies the reload command for you.
               </BandHead>
 
               <Tabs
                 label="Features"
                 items={FEATURES.map((f) => ({
-                  id: f.tab,
+                  id: f.name.toLowerCase(),
                   tab: f.name,
                   panel: (
                     <div className="feature">
@@ -318,6 +332,7 @@ export default function Home() {
                       <div className="plate">
                         <Panel
                           initialTab={f.tab}
+                          initialShown={f.shown}
                           label={`${f.name} tab, recreated`}
                           className="plate-panel"
                         />

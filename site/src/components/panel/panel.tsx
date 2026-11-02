@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  Check,
   CheckCircle2,
   ChevronRight,
   ClipboardList,
@@ -25,6 +26,7 @@ import { Pictogram } from '../pictogram'
 import {
   AUTHOR_LOCK_TIP,
   PORTS,
+  HARNESSES,
   PROJECTS,
   SERVICES,
   SERVICE_OVERRIDES,
@@ -40,6 +42,7 @@ import {
   type SkillState,
   type TabId,
 } from './panel-data'
+import type { Harness } from './panel-data'
 
 const TABS: { id: TabId; label: string; icon: LucideIcon }[] = [
   { id: 'ports', label: 'Ports', icon: Radio },
@@ -85,15 +88,21 @@ function mainState(service: Service, values: boolean[]): MainState {
  * server, undo. The footer says what was saved. Nothing persists.
  */
 export function Panel({
+  initialShown,
   initialTab = 'ports',
   label = 'Loadout panel, recreated',
   className = '',
 }: {
   initialTab?: TabId
+  /** Tools shown at first. All of them unless a section is making a point. */
+  initialShown?: Harness[]
   label?: string
   className?: string
 }) {
   const [tab, setTab] = useState<TabId>(initialTab)
+  const [shown, setShown] = useState<Harness[]>(
+    initialShown ?? HARNESSES.map((h) => h.id),
+  )
   const [scope, setScope] = useState<Scope>(null)
   const [picking, setPicking] = useState(false)
   const [data, setData] = useState<Data>(initialData)
@@ -148,7 +157,9 @@ export function Panel({
     const cur = svcValues(s)
     writeService(
       s,
-      s.controls.map((c, i) => (c.lock ? cur[i] : on)),
+      s.controls.map((c, i) =>
+        c.lock || !shown.includes(c.harness) ? cur[i] : on,
+      ),
       `${s.name} ${on ? 'on' : 'off'} ${where}`,
     )
   }
@@ -259,9 +270,13 @@ export function Panel({
 
   const counts: Record<TabId, number> = {
     ports: ports.length,
-    tools: SERVICES.length,
+    tools: SERVICES.filter((s) => s.controls.some((c) => shown.includes(c.harness)))
+      .length,
     skills:
-      USER_SKILLS.length + SERVICES.filter((s) => s.pluginSkills).length,
+      USER_SKILLS.length +
+      (shown.includes('Claude Code')
+        ? SERVICES.filter((s) => s.pluginSkills).length
+        : 0),
   }
 
   return (
@@ -273,11 +288,37 @@ export function Panel({
         <span className="mac-title">Loadout</span>
         <span
           className="mac-icon-button"
-          title="Tools, presets and restore"
+          title="Presets and restore"
           aria-hidden
         >
           <RotateCw size={14} strokeWidth={1.8} />
         </span>
+      </div>
+
+      <div className="mac-harnesses" role="group" aria-label="Tools to show">
+        {HARNESSES.map(({ id, label: name }) => {
+          const on = shown.includes(id)
+          return (
+            <button
+              key={id}
+              type="button"
+              className="mac-tool"
+              aria-pressed={on}
+              disabled={on && shown.length === 1}
+              title={
+                on && shown.length === 1
+                  ? 'At least one tool has to stay on.'
+                  : 'Hidden tools keep working. Loadout just won’t show or change them.'
+              }
+              onClick={() =>
+                setShown(on ? shown.filter((h) => h !== id) : [...shown, id])
+              }
+            >
+              <Check size={10} strokeWidth={3} aria-hidden />
+              {name}
+            </button>
+          )
+        })}
       </div>
 
       <div className="mac-scope">
@@ -302,6 +343,7 @@ export function Panel({
         {picking ? (
           <ProjectMenu
             scope={scope}
+            shown={shown}
             onPick={pickScope}
             onClose={() => setPicking(false)}
           />
@@ -359,6 +401,7 @@ export function Panel({
         )}
         {tab === 'tools' && (
           <ToolsView
+            shown={shown}
             values={svcValues}
             setHere={svcSetHere}
             projects={svcProjects}
@@ -377,6 +420,7 @@ export function Panel({
         )}
         {tab === 'skills' && (
           <SkillsView
+            shown={shown}
             value={skillValue}
             setHere={skillSetHere}
             projects={skillProjects}
@@ -401,13 +445,13 @@ export function Panel({
               <span className="mac-foot-note">{note.text}</span>
               {note.reload && (
                 <span>
-                  Paste <code>/reload-plugins</code> in open sessions
+                  <code>/reload-plugins</code> copied
                 </span>
               )}
             </>
           ) : (
             <span>
-              Changes copy <code>/reload-plugins</code>
+              Open Claude sessions need <code>/reload-plugins</code>
             </span>
           )}
         </span>
@@ -429,17 +473,20 @@ function labelOf(state: SkillState) {
 }
 
 function ProjectMenu({
+  shown,
   scope,
   onPick,
   onClose,
 }: {
+  shown: Harness[]
   scope: Scope
   onPick: (id: Scope) => void
   onClose: () => void
 }) {
   const [query, setQuery] = useState('')
   const term = query.trim().toLowerCase()
-  const matches = PROJECTS.filter((p) => p.name.includes(term))
+  const listed = PROJECTS.filter((p) => p.tools.some((t) => shown.includes(t)))
+  const matches = listed.filter((p) => p.name.includes(term))
   const showAll = !term || 'all projects'.includes(term)
 
   return (
@@ -453,7 +500,7 @@ function ProjectMenu({
           autoFocus
           type="text"
           value={query}
-          placeholder={`Search ${PROJECTS.length} projects`}
+          placeholder={`Search ${listed.length} projects`}
           aria-label="Search projects"
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -622,6 +669,7 @@ function PortsView({
 }
 
 function ToolsView({
+  shown,
   values,
   setHere,
   projects,
@@ -631,6 +679,7 @@ function ToolsView({
   onControl,
   onReset,
 }: {
+  shown: Harness[]
   values: (s: Service) => boolean[]
   setHere: (s: Service) => boolean
   projects: (s: Service) => string[]
@@ -642,9 +691,18 @@ function ToolsView({
 }) {
   const [filter, setFilter] = useState('')
   const term = filter.trim().toLowerCase()
-  const matches = SERVICES.filter((s) => s.name.toLowerCase().includes(term))
-  const on = SERVICES.filter((s) => {
-    const m = mainState(s, values(s))
+  // A hidden tool's controls don't exist as far as this tab goes.
+  const indexes = (s: Service) =>
+    s.controls.flatMap((c, i) => (shown.includes(c.harness) ? [i] : []))
+  const visible = SERVICES.filter((s) => indexes(s).length > 0)
+  const narrow = (s: Service) => ({
+    ...s,
+    controls: indexes(s).map((i) => s.controls[i]),
+  })
+  const narrowValues = (s: Service) => indexes(s).map((i) => values(s)[i])
+  const matches = visible.filter((s) => s.name.toLowerCase().includes(term))
+  const on = visible.filter((s) => {
+    const m = mainState(narrow(s), narrowValues(s))
     return m === 'on' || m === 'mixed' || m === 'locked-on'
   })
   const skillTokens = on.reduce((n, s) => n + (s.pluginSkills?.tokens ?? 0), 0)
@@ -657,17 +715,18 @@ function ToolsView({
         placeholder="Filter tools"
       />
       <Toolbar
-        summary={`${on.length} of ${SERVICES.length} on${skillTokens > 0 ? ` · plugin skills ${formatTokens(skillTokens)}` : ''}`}
+        summary={`${on.length} of ${visible.length} on${skillTokens > 0 ? ` · plugin skills ${formatTokens(skillTokens)}` : ''}`}
       />
       {matches.length === 0 && (
         <p className="mac-empty">Nothing matches {filter}</p>
       )}
       <ul className="mac-list">
         {matches.map((s) => {
-          const v = values(s)
-          const state = mainState(s, v)
+          const v = narrowValues(s)
+          const controls = narrow(s).controls
+          const state = mainState(narrow(s), v)
           const open = expanded.includes(s.id)
-          const harnesses = [...new Set(s.controls.map((c) => c.harness))]
+          const harnesses = [...new Set(controls.map((c) => c.harness))]
           const subtitle = [
             s.kind,
             s.tokens > 0 ? formatTokens(s.tokens) : '',
@@ -676,7 +735,7 @@ function ToolsView({
             .filter(Boolean)
             .join(' · ')
           const elsewhere = projects(s)
-          const lock = s.controls.find((c) => c.lock)?.lock
+          const lock = controls.find((c) => c.lock)?.lock
           return (
             <li key={s.id} className="mac-service">
               <div className="mac-row">
@@ -746,7 +805,7 @@ function ToolsView({
               </div>
               {open && (
                 <div className="mac-detail">
-                  {s.controls.map((c, i) => (
+                  {controls.map((c, i) => (
                     <div key={c.harness + c.label} className="mac-control">
                       <span className="mac-control-text">
                         <span>
@@ -765,7 +824,7 @@ function ToolsView({
                         <Switch
                           on={v[i]}
                           label={`${s.name} in ${c.harness}`}
-                          onChange={() => onControl(s, i, !v[i])}
+                          onChange={() => onControl(s, indexes(s)[i], !v[i])}
                         />
                       )}
                     </div>
@@ -787,6 +846,7 @@ function ToolsView({
 }
 
 function SkillsView({
+  shown,
   value,
   setHere,
   projects,
@@ -796,6 +856,7 @@ function SkillsView({
   onTurnOffAll,
   onOpenTools,
 }: {
+  shown: Harness[]
   value: (k: Skill) => SkillState
   setHere: (k: Skill) => boolean
   projects: (k: Skill) => string[]
@@ -810,7 +871,9 @@ function SkillsView({
   const matches = USER_SKILLS.filter((k) => k.name.includes(term))
   const auto = USER_SKILLS.filter((k) => value(k) === 'auto')
   const tokens = auto.reduce((n, k) => n + k.tokens, 0)
-  const plugins = SERVICES.filter((s) => s.pluginSkills)
+  const plugins = shown.includes('Claude Code')
+    ? SERVICES.filter((s) => s.pluginSkills)
+    : []
 
   return (
     <>
