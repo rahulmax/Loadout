@@ -409,6 +409,17 @@ struct MenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+
+            PortsSection(
+                store: portsStore,
+                knownProjects: knownProjectPaths,
+                onOpenProject: { path in
+                    picking = false
+                    store.select(.project(path))
+                    tab = .tools
+                }
+            )
+
             ScopeBar(store: store, picking: $picking)
 
             if picking {
@@ -417,16 +428,6 @@ struct MenuView: View {
                     .frame(maxHeight: .infinity)
             } else {
                 if namingPreset { presetNameRow }
-
-                PortsSection(
-                    store: portsStore,
-                    knownProjects: knownProjectPaths,
-                    selectedProject: store.scope.projectPath,
-                    onOpenProject: { path in
-                        store.select(.project(path))
-                        tab = .tools
-                    }
-                )
 
                 TabBar(selection: $tab, count: count(for:))
                     .padding(.horizontal, Theme.rowInset)

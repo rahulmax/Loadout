@@ -759,16 +759,15 @@ struct PortGroup: Identifiable, Hashable {
     }
 }
 
-/// Always on screen above the tabs, so it stays small: up to three servers to a row.
-/// Everything else about a server is in its tooltip, and its actions appear on hover.
+/// Always on screen at the top of the panel, so it stays small: up to three servers to a
+/// row. Lists every server whichever project is chosen, because this says what's running
+/// on the machine. Everything else about a server is in its tooltip, and its actions
+/// appear on hover.
 struct PortsSection: View {
     @ObservedObject var store: PortsStore
     let knownProjects: [String]
-    /// The project chosen at the top of the panel, if any.
-    var selectedProject: String?
     var onOpenProject: (String) -> Void = { _ in }
 
-    @State private var showAll = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let perRow = 3
@@ -782,31 +781,22 @@ struct PortsSection: View {
         PortGroup.make(from: store.ports, known: knownProjects, home: NSHomeDirectory())
     }
 
-    private var filtered: Bool { selectedProject != nil && !showAll }
-
-    private var visible: [PortGroup] {
-        guard filtered else { return groups }
-        return groups.filter { $0.path == selectedProject }
-    }
-
-    private var visiblePorts: [PortEntry] { visible.flatMap(\.ports) }
-
     /// The cells are a fixed height, so the list's height is known without measuring.
     private var listHeight: CGFloat {
-        let rows = (visiblePorts.count + Self.perRow - 1) / Self.perRow
+        let rows = (store.ports.count + Self.perRow - 1) / Self.perRow
         return CGFloat(rows) * Self.cellHeight + CGFloat(max(0, rows - 1)) * Self.cellGap
     }
 
     private var status: String? {
         if let notice = store.notice { return notice }
         if store.ports.isEmpty { return store.isScanning ? "Scanning…" : "No dev servers running" }
-        return visible.isEmpty ? "None in this project" : nil
+        return nil
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             header
-            if !visible.isEmpty {
+            if !store.ports.isEmpty {
                 ScrollView {
                     list
                 }
@@ -831,7 +821,6 @@ struct PortsSection: View {
         .animation(reduceMotion ? nil : Motion.reveal, value: store.ports.map(\.port))
         .onAppear { store.startAutoRefresh() }
         .onDisappear { store.stopAutoRefresh() }
-        .onChange(of: selectedProject) { showAll = false }
     }
 
     private var header: some View {
@@ -840,8 +829,8 @@ struct PortsSection: View {
                 .font(.sectionLabel)
                 .tracking(0.6)
                 .foregroundStyle(.secondary)
-            if !visiblePorts.isEmpty {
-                Text(verbatim: "\(visiblePorts.count)")
+            if !store.ports.isEmpty {
+                Text(verbatim: "\(store.ports.count)")
                     .font(.sectionLabel)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -855,10 +844,9 @@ struct PortsSection: View {
                     .help(status)
             }
             Spacer(minLength: 6)
-            filterButton
-            if visiblePorts.count > 1 {
-                let what = filtered ? "the \(visiblePorts.count) servers shown" : "all \(visiblePorts.count) servers"
-                TwoStepIconButton(help: "Kill \(what)", action: { store.kill(group: visiblePorts) })
+            if store.ports.count > 1 {
+                let what = "all \(store.ports.count) servers"
+                TwoStepIconButton(help: "Kill \(what)", action: { store.killAll() })
                     .accessibilityLabel("Kill \(what)")
             }
         }
@@ -867,40 +855,17 @@ struct PortsSection: View {
         .padding(.trailing, Theme.rowInset + 2)
     }
 
-    /// With a project chosen, servers elsewhere are one click away.
-    @ViewBuilder
-    private var filterButton: some View {
-        if let selectedProject {
-            let elsewhere = store.ports.count - groups.filter { $0.path == selectedProject }.reduce(0) { $0 + $1.ports.count }
-            if showAll {
-                Button("Only \((selectedProject as NSString).lastPathComponent)") { showAll = false }
-                    .buttonStyle(.plain)
-                    .font(.rowMeta)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            } else if elsewhere > 0 {
-                Button("\(elsewhere) elsewhere") { showAll = true }
-                    .buttonStyle(.plain)
-                    .font(.rowMeta)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-    }
-
     /// One grid, ordered by project, so a row fills up before the next one starts.
     private var list: some View {
         LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: Self.cellGap), count: Self.perRow),
             spacing: Self.cellGap
         ) {
-            ForEach(visible) { group in
+            ForEach(groups) { group in
                 ForEach(group.ports) { entry in
                     PortCell(
                         entry: entry,
                         group: group,
-                        // The picker at the top already names a chosen project.
-                        namesProject: !filtered,
                         location: group.path == nil ? (entry.displayPath ?? entry.processName) : group.subfolder(of: entry),
                         health: store.health[entry.port] ?? .unknown,
                         pending: store.pending[entry.port],
@@ -920,8 +885,6 @@ struct PortsSection: View {
 struct PortCell: View {
     let entry: PortEntry
     let group: PortGroup
-    /// Off when a project is chosen, so the cell shows the framework instead.
-    let namesProject: Bool
     /// Subfolder within the group's project.
     var location: String?
     let health: PortHealth
@@ -941,8 +904,6 @@ struct PortCell: View {
 
     /// Keyboard users get the same actions as the pointer.
     private var showsActions: Bool { pending == nil && (hovering || focused != nil) }
-
-    private var caption: String? { namesProject ? group.name : entry.framework }
 
     private var details: String {
         var lines = [address, group.displayPath ?? group.name]
@@ -966,8 +927,8 @@ struct PortCell: View {
                     Text(verbatim: ":\(entry.port)")
                         .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
                         .lineLimit(1)
-                    if !showsActions, pending == nil, let caption {
-                        Text(verbatim: caption)
+                    if !showsActions, pending == nil {
+                        Text(verbatim: group.name)
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
