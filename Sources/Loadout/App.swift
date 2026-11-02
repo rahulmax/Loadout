@@ -151,6 +151,7 @@ struct IconButton: View {
     let systemName: String
     let help: String
     var rotation: Angle = .zero
+    var size: CGFloat = 26
     let action: () -> Void
 
     @State private var hovering = false
@@ -159,10 +160,10 @@ struct IconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 11.5, weight: .medium))
+                .font(.system(size: size < 26 ? 10 : 11.5, weight: .medium))
                 .rotationEffect(rotation)
                 .foregroundStyle(isEnabled ? (hovering ? Color.primary : Color.secondary) : Color.secondary.opacity(0.4))
-                .frame(width: 26, height: 26)
+                .frame(width: size, height: size)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(hovering && isEnabled ? Theme.hoverStrong : .clear)
@@ -374,20 +375,18 @@ struct MenuView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let fixedHeight: CGFloat?
 
-    init(store: AppStore, initialTab: Tab = .ports, fixedHeight: CGFloat? = nil) {
+    init(store: AppStore, initialTab: Tab = .tools, fixedHeight: CGFloat? = nil) {
         self.store = store
         self._tab = State(initialValue: initialTab)
         self.fixedHeight = fixedHeight
     }
 
     enum Tab: String, CaseIterable, Identifiable {
-        case ports = "Ports"
         case tools = "Tools"
         case skills = "Skills"
         var id: String { rawValue }
         var symbol: String {
             switch self {
-            case .ports: return "dot.radiowaves.left.and.right"
             case .tools: return "puzzlepiece.extension"
             case .skills: return "sparkles"
             }
@@ -396,7 +395,6 @@ struct MenuView: View {
 
     private func count(for tab: Tab) -> Int {
         switch tab {
-        case .ports: return portsStore.ports.count
         case .tools: return store.inventory.services.count
         case .skills: return store.inventory.skills.count
         }
@@ -420,6 +418,16 @@ struct MenuView: View {
             } else {
                 if namingPreset { presetNameRow }
 
+                PortsSection(
+                    store: portsStore,
+                    knownProjects: knownProjectPaths,
+                    selectedProject: store.scope.projectPath,
+                    onOpenProject: { path in
+                        store.select(.project(path))
+                        tab = .tools
+                    }
+                )
+
                 TabBar(selection: $tab, count: count(for:))
                     .padding(.horizontal, Theme.rowInset)
                     .padding(.bottom, 10)
@@ -433,16 +441,6 @@ struct MenuView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         switch tab {
-                        case .ports:
-                            PortsSection(
-                                store: portsStore,
-                                knownProjects: knownProjectPaths,
-                                selectedProject: store.scope.projectPath,
-                                onOpenProject: { path in
-                                    store.select(.project(path))
-                                    tab = .tools
-                                }
-                            )
                         case .tools:
                             ToolsSection(store: store)
                         case .skills:

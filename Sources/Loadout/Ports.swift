@@ -759,6 +759,8 @@ struct PortGroup: Identifiable, Hashable {
     }
 }
 
+/// Always on screen above the tabs, so it stays small: up to three servers to a row.
+/// Everything else about a server is in its tooltip, and its actions appear on hover.
 struct PortsSection: View {
     @ObservedObject var store: PortsStore
     let knownProjects: [String]
@@ -768,6 +770,15 @@ struct PortsSection: View {
 
     @State private var showAll = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let perRow = 3
+    private static let cellHeight: CGFloat = 26
+    private static let cellGap: CGFloat = 4
+    private static let labelHeight: CGFloat = 16
+    private static let groupGap: CGFloat = 6
+    /// Past this the list scrolls, so a lot of servers can't push the tools off the panel.
+    /// Between two rows on purpose: a row cut in half says there's more.
+    private static let maxListHeight: CGFloat = 160
 
     private var groups: [PortGroup] {
         PortGroup.make(from: store.ports, known: knownProjects, home: NSHomeDirectory())
@@ -780,58 +791,131 @@ struct PortsSection: View {
         return groups.filter { $0.path == selectedProject }
     }
 
-    private var summary: String {
+    private var visiblePorts: [PortEntry] { visible.flatMap(\.ports) }
+
+    /// The cells are a fixed height, so the list's height is known without measuring.
+    private var listHeight: CGFloat {
+        let groupHeights = visible.map { group -> CGFloat in
+            let rows = (group.ports.count + Self.perRow - 1) / Self.perRow
+            let cells = CGFloat(rows) * Self.cellHeight + CGFloat(rows - 1) * Self.cellGap
+            return cells + (filtered ? 0 : Self.labelHeight)
+        }
+        return groupHeights.reduce(0, +) + CGFloat(max(0, groupHeights.count - 1)) * Self.groupGap
+    }
+
+    private var status: String? {
         if let notice = store.notice { return notice }
-        let projects = groups.filter { $0.path != nil }.count
-        let noun = projects == 1 ? "project" : "projects"
-        return projects == 0 ? "\(store.ports.count) listening" : "\(store.ports.count) listening in \(projects) \(noun)"
+        if store.ports.isEmpty { return store.isScanning ? "Scanning…" : "No dev servers running" }
+        return visible.isEmpty ? "None in this project" : nil
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if store.ports.isEmpty {
-                EmptyState(
-                    symbol: "dot.radiowaves.left.and.right",
-                    title: store.isScanning ? "Scanning ports…" : "No dev servers running",
-                    message: store.notice ?? (store.isScanning ? nil : "Start one and it shows up here within a few seconds.")
+        VStack(alignment: .leading, spacing: 2) {
+            header
+            if !visible.isEmpty {
+                ScrollView {
+                    list
+                }
+                .scrollDisabled(listHeight <= Self.maxListHeight)
+                .scrollIndicators(.automatic)
+                .frame(height: min(listHeight, Self.maxListHeight))
+                .mask {
+                    VStack(spacing: 0) {
+                        Color.black
+                        LinearGradient(
+                            colors: [.black, listHeight > Self.maxListHeight ? .clear : .black],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 14)
+                    }
+                }
+                .padding(.horizontal, Theme.rowInset)
+            }
+        }
+        .padding(.bottom, 10)
+        .animation(reduceMotion ? nil : Motion.reveal, value: store.ports.map(\.port))
+        .onAppear { store.startAutoRefresh() }
+        .onDisappear { store.stopAutoRefresh() }
+        .onChange(of: selectedProject) { showAll = false }
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Text("PORTS")
+                .font(.sectionLabel)
+                .tracking(0.6)
+                .foregroundStyle(.secondary)
+            if !visiblePorts.isEmpty {
+                Text(verbatim: "\(visiblePorts.count)")
+                    .font(.sectionLabel)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            if let status {
+                Text(verbatim: status)
+                    .font(.rowMeta)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(status)
+            }
+            Spacer(minLength: 6)
+            filterButton
+            if visiblePorts.count > 1 {
+                TwoStepConfirmButton(
+                    idleLabel: filtered ? "Kill \(visiblePorts.count)" : "Kill all",
+                    confirmLabel: filtered ? "Confirm kill \(visiblePorts.count)" : "Confirm kill all",
+                    systemImage: "xmark",
+                    action: { store.kill(group: visiblePorts) }
                 )
-            } else {
-                ListToolbar(summary: summary) {
-                    TwoStepConfirmButton(
-                        idleLabel: "Kill all",
-                        confirmLabel: "Confirm kill all",
-                        systemImage: "xmark",
-                        action: { store.killAll() }
-                    )
-                }
+            }
+        }
+        .frame(height: 24)
+        .padding(.leading, Theme.gutter)
+        .padding(.trailing, Theme.rowInset + 2)
+    }
 
-                if let selectedProject {
-                    PortFilterNote(
-                        project: (selectedProject as NSString).lastPathComponent,
-                        hidden: store.ports.count - visible.reduce(0) { $0 + $1.ports.count },
-                        showAll: $showAll
-                    )
-                }
+    /// With a project chosen, servers elsewhere are one click away.
+    @ViewBuilder
+    private var filterButton: some View {
+        if let selectedProject {
+            let elsewhere = store.ports.count - groups.filter { $0.path == selectedProject }.reduce(0) { $0 + $1.ports.count }
+            if showAll {
+                Button("Only \((selectedProject as NSString).lastPathComponent)") { showAll = false }
+                    .buttonStyle(.plain)
+                    .font(.rowMeta)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else if elsewhere > 0 {
+                Button("\(elsewhere) elsewhere") { showAll = true }
+                    .buttonStyle(.plain)
+                    .font(.rowMeta)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
 
-                if visible.isEmpty {
-                    EmptyState(symbol: "dot.radiowaves.left.and.right", title: "No servers running in this project")
-                }
-
-                ForEach(visible) { group in
-                    PortGroupHeader(
-                        group: group,
-                        onStop: { store.kill(group: group.ports) },
-                        onOpen: group.path.map { path in { onOpenProject(path) } }
-                    )
-                    ForEach(group.ports) { entry in
-                        VStack(spacing: 0) {
-                            if entry.id != group.ports.first?.id {
-                                Rectangle()
-                                    .fill(Theme.hairline)
-                                    .frame(height: 1)
-                                    .padding(.horizontal, Theme.gutter)
-                            }
-                            PortRow(
+    private var list: some View {
+        VStack(alignment: .leading, spacing: Self.groupGap) {
+            ForEach(visible) { group in
+                VStack(alignment: .leading, spacing: 0) {
+                    // The picker at the top already names a chosen project.
+                    if !filtered {
+                        PortGroupLabel(
+                            group: group,
+                            onStop: { store.kill(group: group.ports) },
+                            onOpen: group.path.map { path in { onOpenProject(path) } }
+                        )
+                        .frame(height: Self.labelHeight)
+                    }
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: Self.cellGap), count: Self.perRow),
+                        spacing: Self.cellGap
+                    ) {
+                        ForEach(group.ports) { entry in
+                            PortCell(
                                 entry: entry,
                                 location: group.path == nil ? (entry.displayPath ?? entry.processName) : group.subfolder(of: entry),
                                 health: store.health[entry.port] ?? .unknown,
@@ -839,209 +923,207 @@ struct PortsSection: View {
                                 onKill: { store.kill(entry) },
                                 onRestart: { store.restart(entry) }
                             )
+                            .frame(height: Self.cellHeight)
+                            .transition(.opacity)
                         }
-                        .transition(.opacity.combined(with: .offset(y: -4)))
                     }
                 }
             }
         }
-        .animation(reduceMotion ? nil : Motion.reveal, value: store.ports.map(\.port))
-        .onAppear { store.startAutoRefresh() }
-        .onDisappear { store.stopAutoRefresh() }
-        .onChange(of: selectedProject) { showAll = false }
     }
 }
 
-private struct PortFilterNote: View {
-    let project: String
-    let hidden: Int
-    @Binding var showAll: Bool
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(verbatim: showAll ? "Showing every project" : "Only \(project)\(hidden > 0 ? ". \(hidden) more elsewhere." : "")")
-                .font(.rowSubtitle)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            Button(showAll ? "Only \(project)" : "Show all") { showAll.toggle() }
-                .buttonStyle(CapsuleButtonStyle())
-        }
-        .padding(.leading, Theme.gutter)
-        .padding(.trailing, Theme.rowInset + 4)
-        .padding(.bottom, 4)
-    }
-}
-
-private struct PortGroupHeader: View {
+/// A project's name above its servers. The name opens the project's tools. Stopping all
+/// of them appears on hover.
+private struct PortGroupLabel: View {
     let group: PortGroup
     let onStop: () -> Void
     let onOpen: (() -> Void)?
 
+    @State private var hovering = false
+
+    private var name: some View {
+        Text(verbatim: group.name)
+            .font(.system(size: 10.5, weight: .medium))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: group.path == nil ? "questionmark.folder" : "folder")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-            Text(verbatim: group.name)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-            Text(verbatim: "\(group.ports.count)")
-                .font(.rowMeta)
-                .foregroundStyle(.secondary)
-            if let path = group.displayPath {
-                Text(verbatim: path)
-                    .font(.rowMeta)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(Text(verbatim: path))
-            }
-            Spacer(minLength: 6)
+        HStack(spacing: 4) {
             if let onOpen {
-                IconButton(systemName: "slider.horizontal.3", help: "Tools for this project", action: onOpen)
+                Button(action: onOpen) { name }
+                    .buttonStyle(.plain)
+                    .help(Text(verbatim: "Tools for \(group.displayPath ?? group.name)"))
                     .accessibilityLabel("Tools for \(group.name)")
+            } else {
+                name
             }
-            if group.ports.count > 1 {
-                TwoStepConfirmButton(
-                    idleLabel: "Kill \(group.ports.count)",
-                    confirmLabel: "Confirm kill \(group.ports.count)",
-                    systemImage: "xmark",
+            Spacer(minLength: 4)
+            if hovering && group.ports.count > 1 {
+                TwoStepIconButton(
+                    help: "Kill the \(group.ports.count) servers in \(group.name)",
                     action: onStop
                 )
+                .accessibilityLabel("Kill the \(group.ports.count) servers in \(group.name)")
             }
         }
-        .padding(.leading, Theme.gutter)
-        .padding(.trailing, Theme.rowInset + 4)
-        .padding(.top, 12)
-        .padding(.bottom, 2)
+        .padding(.leading, Theme.rowPadding)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .accessibilityAction(named: "Kill \(group.ports.count) servers", onStop)
     }
 }
 
-struct PortRow: View {
+struct PortCell: View {
     let entry: PortEntry
-    /// Subfolder within the group's project. The group header already names the project.
+    /// Subfolder within the group's project. The group label already names the project.
     var location: String?
     let health: PortHealth
     let pending: PortsStore.PendingAction?
     let onKill: () -> Void
     let onRestart: () -> Void
 
-    private var meta: String {
-        var parts = ["PID \(entry.pid)", entry.processName]
-        if let uptime = entry.uptime { parts.append("up \(uptime)") }
-        return parts.joined(separator: " · ")
+    @State private var hovering = false
+    @FocusState private var focused: Part?
+
+    private enum Part { case open, restart, kill }
+
+    /// A plain string first: an Int interpolated into a label gets locale grouping, "38,006".
+    private var address: String { "localhost:\(entry.port)" }
+
+    /// Keyboard users get the same actions as the pointer.
+    private var showsActions: Bool { pending == nil && (hovering || focused != nil) }
+
+    private var details: String {
+        var lines = [address]
+        if let framework = entry.framework { lines.append(framework) }
+        if let location { lines.append(location) }
+        var process = [entry.processName, "PID \(entry.pid)"]
+        if let uptime = entry.uptime { process.append("up \(uptime)") }
+        lines.append(process.joined(separator: " · "))
+        return lines.joined(separator: "\n")
+    }
+
+    private func open() {
+        if let url = entry.url { NSWorkspace.shared.open(url) }
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            HealthDot(health: pending == nil ? health : .checking)
-                .padding(.top, 2)
-                .padding(.leading, -2)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    PortLink(entry: entry)
-                    if let framework = entry.framework {
-                        Text(verbatim: framework)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 6)
-                            .frame(height: 16)
-                            .background(Capsule().fill(Theme.track))
-                    }
-                }
-
-                if let location {
-                    Text(verbatim: location)
-                        .font(.rowSubtitle)
-                        .foregroundStyle(.secondary)
+        HStack(spacing: 0) {
+            Button(action: open) {
+                HStack(spacing: 5) {
+                    HealthDot(health: pending == nil ? health : .checking)
+                    Text(verbatim: ":\(entry.port)")
+                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
                         .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(Text(verbatim: entry.cwd ?? ""))
-                }
-
-                Text(verbatim: meta)
-                    .font(.rowMeta)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            ZStack(alignment: .trailing) {
-                if let pending {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.mini)
-                        Text(pending == .stopping ? "Stopping…" : "Restarting…")
-                            .font(.control)
+                    if !showsActions, pending == nil, let framework = entry.framework {
+                        Text(verbatim: framework)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
-                    .frame(height: 26)
-                    .transition(.textSwap)
-                } else {
-                    HStack(spacing: 4) {
-                        IconButton(
-                            systemName: "arrow.clockwise",
-                            help: entry.canRestart
-                                ? "Restart — kill and relaunch the same command in the same directory"
-                                : "Can't restart — no known working directory for this process",
-                            action: onRestart
-                        )
-                        .accessibilityLabel("Restart localhost:\(entry.port)")
-                        .disabled(!entry.canRestart)
-
-                        Button(action: onKill) { Text("Kill") }
-                            .buttonStyle(CapsuleButtonStyle())
-                            .help("Kill — SIGTERM, then SIGKILL if it doesn't stop")
-                    }
-                    .transition(.textSwap)
+                    Spacer(minLength: 0)
                 }
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
             }
-            .animation(Motion.reveal, value: pending)
+            .buttonStyle(.plain)
+            .focused($focused, equals: .open)
+            .accessibilityLabel(address)
+            .accessibilityValue(details)
+            .accessibilityAction(named: "Restart") { if entry.canRestart { onRestart() } }
+            .accessibilityAction(named: "Kill", onKill)
+
+            if pending != nil {
+                ProgressView().controlSize(.mini).padding(.trailing, 5)
+            } else if showsActions {
+                IconButton(
+                    systemName: "arrow.clockwise",
+                    help: entry.canRestart
+                        ? "Restart: kill and relaunch the same command in the same folder"
+                        : "Can't restart: no known folder for this process",
+                    size: 22,
+                    action: onRestart
+                )
+                .disabled(!entry.canRestart)
+                .focused($focused, equals: .restart)
+                .accessibilityLabel("Restart \(address)")
+                TwoStepIconButton(help: "Kill: SIGTERM, then SIGKILL if it doesn't stop", action: onKill)
+                    .focused($focused, equals: .kill)
+                    .accessibilityLabel("Kill \(address)")
+            }
         }
+        .padding(.leading, 7)
+        .padding(.trailing, 2)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(hovering ? Theme.hoverStrong : Theme.track)
+        )
         .opacity(pending == nil ? 1 : 0.6)
+        .help(details)
+        .onHover { hovering = $0 }
+        .animation(Motion.hover, value: hovering)
         .animation(Motion.hover, value: pending)
-        .rowChrome(verticalPadding: 10)
-        // The whole card opens the server. Kill and Restart are buttons, so they keep
-        // their own clicks.
-        .onTapGesture {
-            if pending == nil, let url = entry.url { NSWorkspace.shared.open(url) }
+        .contextMenu {
+            Button("Open \(address)", action: open)
+            Button("Restart", action: onRestart).disabled(!entry.canRestart || pending != nil)
+            Button("Kill", action: onKill).disabled(pending != nil)
         }
     }
 }
 
-/// `localhost:PORT` with the port number carrying the weight. Plain text, not a blue link:
-/// hover underlines it and reveals an arrow.
-struct PortLink: View {
-    let entry: PortEntry
+/// An × that asks once before it acts. It appears on hover in a tight row, so one stray
+/// click shouldn't stop a server.
+struct TwoStepIconButton: View {
+    let help: String
+    let action: () -> Void
+
+    @State private var armed = false
     @State private var hovering = false
+    @State private var resetTask: Task<Void, Never>?
 
     var body: some View {
         Button {
-            if let url = entry.url { NSWorkspace.shared.open(url) }
+            resetTask?.cancel()
+            if armed {
+                armed = false
+                action()
+            } else {
+                armed = true
+                resetTask = Task {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    if !Task.isCancelled { armed = false }
+                }
+            }
         } label: {
-            HStack(spacing: 4) {
-                (Text(verbatim: "localhost:").foregroundStyle(.secondary)
-                    + Text(verbatim: "\(entry.port)").foregroundStyle(.primary).fontWeight(.semibold))
-                    .font(.system(size: 12.5, weight: .medium, design: .monospaced))
-                    .underline(hovering, color: .secondary.opacity(0.5))
-                    .lineLimit(1)
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(armed ? Color.primary : (hovering ? Theme.hoverStrong : .clear))
                 ZStack {
-                    if hovering {
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.secondary)
+                    if armed {
+                        Image(systemName: "exclamationmark")
+                            .foregroundStyle(.background)
+                            .transition(.iconSwap)
+                    } else {
+                        Image(systemName: "xmark")
+                            .foregroundStyle(hovering ? Color.primary : Color.secondary)
                             .transition(.iconSwap)
                     }
                 }
-                .frame(width: 10)
+                .font(.system(size: 10, weight: .semibold))
             }
+            .frame(width: 22, height: 22)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
         .onHover { hovering = $0 }
         .animation(Motion.hover, value: hovering)
-        .help(Text(verbatim: "Open http://localhost:\(entry.port)"))
+        .animation(Motion.reveal, value: armed)
+        .help(armed ? "Click again to confirm" : help)
     }
 }
 

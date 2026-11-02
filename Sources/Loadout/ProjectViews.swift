@@ -628,6 +628,12 @@ struct ServiceRow: View {
                 .transition(.opacity)
             }
         }
+        // One surface behind the row and what it opened, so it's clear what belongs to it.
+        .background(
+            RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous)
+                .fill(expanded ? Theme.hover : .clear)
+                .padding(.horizontal, Theme.rowInset)
+        )
         .animation(reduceMotion ? nil : Motion.reveal, value: expanded)
     }
 
