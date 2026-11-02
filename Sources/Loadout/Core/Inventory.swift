@@ -216,13 +216,28 @@ struct InventoryLoader {
 
     func load(scope: Scope) throws -> Inventory {
         let settings = try claudeSettings(scope: scope)
-        var controls: [Control] = []
         var skillsByKey: [String: [PluginSkillInfo]] = [:]
         let showsClaude = state.manages(.claude, paths: paths)
-        if showsClaude { controls += try claudeControls(scope: scope, settings: settings, pluginSkills: &skillsByKey) }
-        if state.manages(.codex, paths: paths) { controls += codexControls(scope: scope) }
-        if state.manages(.antigravity, paths: paths) { controls += antigravityControls(scope: scope) }
-        if state.manages(.cursor, paths: paths) { controls += cursorControls(scope: scope) }
+        // Hidden tools are read too, for their numbers. A broken file in one shouldn't
+        // stop the panel when that tool isn't even showing.
+        var collected: [String: [PluginSkillInfo]] = [:]
+        let claude = showsClaude
+            ? try claudeControls(scope: scope, settings: settings, pluginSkills: &collected)
+            : (try? claudeControls(scope: scope, settings: settings, pluginSkills: &collected)) ?? []
+        if showsClaude { skillsByKey = collected }
+        let available = { (harness: Harness) in
+            state.manages(harness, paths: paths) || state.isInstalled(harness, paths: paths)
+        }
+        let byHarness: [Harness: [Control]] = [
+            .claude: claude,
+            .codex: available(.codex) ? codexControls(scope: scope) : [],
+            .antigravity: available(.antigravity) ? antigravityControls(scope: scope) : [],
+            .cursor: available(.cursor) ? cursorControls(scope: scope) : [],
+        ]
+        let controls = Harness.allCases
+            .filter { state.manages($0, paths: paths) }
+            .flatMap { byHarness[$0] ?? [] }
+        let skills = loadSkills(scope: scope, settings: settings)
 
         var services = Self.group(controls, pluginSkills: skillsByKey)
         services = addMissingHarnesses(services, scope: scope)
@@ -230,7 +245,10 @@ struct InventoryLoader {
 
         var inventory = Inventory()
         inventory.services = services
-        inventory.skills = loadSkills(scope: scope, settings: settings)
+        inventory.skills = skills
+        for (harness, list) in byHarness {
+            inventory.toolCounts[harness] = ToolCounts(controls: list, skills: harness == .claude ? skills.count : 0)
+        }
         let overrides = settings.user["skillOverrides"] as? [String: String] ?? [:]
         inventory.deadOverrideKeys = showsClaude ? overrides.keys.filter { $0.contains(":") }.sorted() : []
         inventory.needsMigration = showsClaude && !settings.hasUserAllowlist

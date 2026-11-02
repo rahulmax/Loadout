@@ -411,7 +411,6 @@ struct MenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            HarnessBar(store: store)
             ScopeBar(store: store, picking: $picking)
 
             if picking {
@@ -472,8 +471,15 @@ struct MenuView: View {
     private var header: some View {
         HStack(spacing: 8) {
             BrandMark()
-            Text("Loadout").font(.panelTitle)
-            Spacer()
+                .help("Loadout")
+                .accessibilityLabel("Loadout")
+            // The row needs the width. With one tool there's no row, so the name returns.
+            if store.availableHarnesses.count > 1 {
+                HarnessBar(store: store)
+            } else {
+                Text("Loadout").font(.panelTitle)
+            }
+            Spacer(minLength: 4)
             optionsMenu
             IconButton(
                 systemName: "arrow.clockwise",
@@ -525,7 +531,10 @@ struct MenuView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Tools, presets and restore")
+        // The panel opens with this as first responder, which drew a blue box around it
+        // for no reason. Keyboard users still get the ring.
+        .focusEffectDisabled(!NSApp.isFullKeyboardAccessEnabled)
+        .help("Presets and restore")
         .accessibilityLabel("Options")
     }
 

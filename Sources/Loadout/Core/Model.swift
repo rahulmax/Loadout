@@ -428,8 +428,43 @@ struct SkillItem: Identifiable, Hashable {
 
 // MARK: - Inventory
 
+/// What one tool has, for the number on its chip.
+struct ToolCounts: Equatable {
+    var plugins = 0
+    var servers = 0
+    var connectors = 0
+    var skills = 0
+
+    var total: Int { plugins + servers + connectors + skills }
+
+    /// "3 plugins, 1 MCP server". Empty kinds are left out.
+    var summary: String {
+        let parts = [
+            (plugins, "plugin", "plugins"),
+            (servers, "MCP server", "MCP servers"),
+            (connectors, "connector", "connectors"),
+            (skills, "skill", "skills"),
+        ]
+        let text = parts.filter { $0.0 > 0 }.map { "\($0.0) \($0.0 == 1 ? $0.1 : $0.2)" }
+        return text.isEmpty ? "Nothing here" : text.joined(separator: ", ")
+    }
+
+    init(controls: [Control] = [], skills: Int = 0) {
+        self.skills = skills
+        for control in controls where control.status != "Not connected" {
+            switch control.kind {
+            case "Plugin": plugins += 1
+            case "claude.ai", "Connector": connectors += 1
+            default: servers += 1
+            }
+        }
+    }
+}
+
 struct Inventory {
     var services: [Service] = []
+    /// Every available tool, hidden ones too, so a hidden chip still has its number.
+    var toolCounts: [Harness: ToolCounts] = [:]
     var skills: [SkillItem] = []
     /// `plugin:skill` keys in `skillOverrides`. Claude Code never reads them.
     var deadOverrideKeys: [String] = []

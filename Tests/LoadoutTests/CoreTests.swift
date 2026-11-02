@@ -1044,6 +1044,32 @@ final class ShownToolsTests: XCTestCase {
         XCTAssertEqual(try load(f, ["claude": true, "codex": false]).services.map(\.name), ["Alpha"])
     }
 
+    func testHiddenToolsKeepTheirNumbers() throws {
+        let f = try twoTools()
+        try f.write(f.paths.userSkills.appendingPathComponent("one/SKILL.md"), "---\nname: one\n---\n")
+        let hiddenCodex = try load(f, ["claude": true, "codex": false])
+        XCTAssertEqual(hiddenCodex.toolCounts[.codex]?.servers, 1)
+        let hiddenClaude = try load(f, ["claude": false, "codex": true])
+        XCTAssertEqual(hiddenClaude.toolCounts[.claude]?.servers, 1)
+        XCTAssertEqual(hiddenClaude.toolCounts[.claude]?.skills, 1)
+        XCTAssertEqual(hiddenClaude.toolCounts[.codex]?.skills, 0, "Skills are counted under Claude")
+    }
+
+    func testCountsSkipConnectorsThatArentConnected() {
+        func control(_ id: String, kind: String, status: String? = nil) -> Control {
+            Control(id: id, harness: .claude, label: id, target: .claudePlugin(id), on: true, setUp: true,
+                    setHere: false, lock: nil, status: status, kind: kind)
+        }
+        let counts = ToolCounts(controls: [
+            control("a", kind: "Plugin"),
+            control("b", kind: "MCP"),
+            control("c", kind: "claude.ai"),
+            control("d", kind: "claude.ai", status: "Not connected"),
+        ], skills: 2)
+        XCTAssertEqual(counts.total, 5)
+        XCTAssertEqual(counts.summary, "1 plugin, 1 MCP server, 1 connector, 2 skills")
+    }
+
     func testClaudeIsShownUntilTurnedOff() throws {
         let f = try Fixture()
         XCTAssertTrue(AppState().manages(.claude, paths: f.paths))

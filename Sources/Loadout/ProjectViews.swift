@@ -11,13 +11,11 @@ struct HarnessBar: View {
     var body: some View {
         let available = store.availableHarnesses
         if available.count > 1 {
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 ForEach(available) { harness in
                     chip(harness)
                 }
             }
-            .padding(.horizontal, Theme.rowInset)
-            .padding(.bottom, 8)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Tools to show")
         }
@@ -26,20 +24,22 @@ struct HarnessBar: View {
     private func chip(_ harness: Harness) -> some View {
         let on = store.managedHarnesses.contains(harness)
         let onlyOne = on && store.managedHarnesses.count == 1
+        let counts = store.inventory.toolCounts[harness] ?? ToolCounts()
         return Button {
             store.setManaged(harness, !on)
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .opacity(on ? 1 : 0)
+            HStack(spacing: 3) {
                 Text(verbatim: harness.shortLabel)
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
+                    .foregroundStyle(on ? .primary : .secondary)
+                Text(verbatim: "\(counts.total)")
+                    .foregroundStyle(on ? .secondary : .tertiary)
+                    .monospacedDigit()
             }
-            .foregroundStyle(on ? .primary : .secondary)
-            .frame(maxWidth: .infinity)
-            .frame(height: 26)
+            .font(.system(size: 11, weight: .medium))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 7)
+            .frame(height: 22)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(on ? Theme.hoverStrong : Color.clear)
@@ -52,9 +52,9 @@ struct HarnessBar: View {
         }
         .buttonStyle(PressableButtonStyle())
         .disabled(onlyOne)
-        .help(onlyOne ? "At least one tool has to stay on." : "Hidden tools keep working. Loadout just won't show or change them.")
+        .help("\(harness.label): \(counts.summary). " + (onlyOne ? "At least one tool has to stay on." : "Hidden tools keep working. Loadout just won't show or change them."))
         .accessibilityLabel(harness.label)
-        .accessibilityValue(on ? "Shown" : "Hidden")
+        .accessibilityValue("\(on ? "Shown" : "Hidden"), \(counts.summary)")
         .accessibilityAddTraits(on ? .isSelected : [])
     }
 }
