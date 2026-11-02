@@ -327,6 +327,8 @@ struct CodeChip: View {
     var body: some View {
         Text(verbatim: text)
             .font(.code)
+            .lineLimit(1)
+            .fixedSize()
             .padding(.horizontal, 5)
             .padding(.vertical, 1.5)
             .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Theme.track))
@@ -573,9 +575,9 @@ struct MenuView: View {
                             .help(note.text)
                         if note.copiedReload {
                             HStack(spacing: 4) {
-                                Text("Copied")
                                 CodeChip(text: "/reload-plugins")
-                                Text("for open Claude sessions")
+                                Text("copied")
+                                    .lineLimit(1)
                             }
                             .help("Paste it into an open Claude Code session. Other tools and new sessions pick the change up when they start.")
                         }

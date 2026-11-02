@@ -733,7 +733,7 @@ private struct PluginSkillList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(verbatim: "\(service.pluginSkills.count) skills come with this plugin. They go on and off with it.")
+            Text(verbatim: "\(service.pluginSkills.count == 1 ? "1 skill comes" : "\(service.pluginSkills.count) skills come") with this plugin. They go on and off with it.")
                 .font(.rowSubtitle)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -983,7 +983,7 @@ private struct PluginSkillSummaryRow: View {
                 Text(verbatim: service.name)
                     .font(.rowTitle)
                     .lineLimit(1)
-                Text(verbatim: "\(service.pluginSkills.count) skills · \(service.isOn ? formatTokens(service.tokens) : "Off, saves \(formatTokens(service.tokens))")")
+                Text(verbatim: "\(service.pluginSkills.count) \(service.pluginSkills.count == 1 ? "skill" : "skills") · \(service.isOn ? formatTokens(service.tokens) : "Off, saves \(formatTokens(service.tokens))")")
                     .font(.rowSubtitle)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
