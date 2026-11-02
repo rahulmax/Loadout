@@ -177,46 +177,6 @@ struct IconButton: View {
     }
 }
 
-/// Small monogram or symbol tile that anchors a row, tinted per item.
-struct Tile: View {
-    enum Glyph {
-        case monogram(String)
-        case symbol(String)
-    }
-
-    let glyph: Glyph
-    let tint: Color
-    var dimmed = false
-
-    var body: some View {
-        let color = dimmed ? Color.secondary : tint
-        ZStack {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(color.opacity(dimmed ? 0.12 : 0.15))
-            switch glyph {
-            case .monogram(let text):
-                Text(verbatim: text).font(.system(size: 12, weight: .semibold, design: .rounded))
-            case .symbol(let name):
-                Image(systemName: name).font(.system(size: 11.5, weight: .medium))
-            }
-        }
-        .foregroundStyle(color)
-        .frame(width: 26, height: 26)
-        .animation(Motion.hover, value: dimmed)
-    }
-
-    /// Stable per-name tint. Swift's `hashValue` is seeded per launch, so hash by hand.
-    static func tint(for key: String) -> Color {
-        let palette: [Color] = [.blue, .indigo, .purple, .pink, .orange, .teal, .green, .cyan]
-        let hash = key.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0x7FFF_FFFF }
-        return palette[hash % palette.count]
-    }
-
-    static func monogram(for name: String) -> String {
-        String(name.first(where: { $0.isLetter || $0.isNumber }) ?? "•").uppercased()
-    }
-}
-
 struct BrandMark: View {
     var body: some View {
         ZStack {
@@ -420,6 +380,10 @@ struct MenuView: View {
                 }
             )
 
+            // Ports says what's running and ignores everything below. These three set
+            // what the list shows and what its switches change, so they stay together.
+            Rectangle().fill(Theme.hairline).frame(height: 1).padding(.bottom, 10)
+            HarnessBar(store: store)
             ScopeBar(store: store, picking: $picking)
 
             if picking {
@@ -479,12 +443,7 @@ struct MenuView: View {
             BrandMark()
                 .help("Loadout")
                 .accessibilityLabel("Loadout")
-            // The row needs the width. With one tool there's no row, so the name returns.
-            if store.availableHarnesses.count > 1 {
-                HarnessBar(store: store)
-            } else {
-                Text("Loadout").font(.panelTitle)
-            }
+            Text("Loadout").font(.panelTitle)
             Spacer(minLength: 4)
             optionsMenu
             IconButton(
@@ -569,10 +528,6 @@ struct MenuView: View {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .transition(.iconSwap)
-                } else {
-                    Image(systemName: "doc.on.clipboard")
-                        .foregroundStyle(.secondary)
-                        .transition(.iconSwap)
                 }
             }
             .font(.system(size: 11, weight: .medium))
@@ -595,13 +550,6 @@ struct MenuView: View {
                         }
                     }
                     .id(note.id)
-                    .transition(.textSwap)
-                } else {
-                    HStack(spacing: 4) {
-                        Text("Open Claude sessions need")
-                        CodeChip(text: "/reload-plugins")
-                    }
-                    .help("Each change copies the command. Other tools and new sessions pick the change up when they start.")
                     .transition(.textSwap)
                 }
             }

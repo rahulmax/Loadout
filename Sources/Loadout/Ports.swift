@@ -768,6 +768,8 @@ struct PortsSection: View {
     let knownProjects: [String]
     var onOpenProject: (String) -> Void = { _ in }
 
+    @State private var hovering = false
+    @FocusState private var stopAllFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let perRow = 3
@@ -818,6 +820,9 @@ struct PortsSection: View {
             }
         }
         .padding(.bottom, 10)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .animation(Motion.hover, value: hovering)
         .animation(reduceMotion ? nil : Motion.reveal, value: store.ports.map(\.port))
         .onAppear { store.startAutoRefresh() }
         .onDisappear { store.stopAutoRefresh() }
@@ -845,9 +850,17 @@ struct PortsSection: View {
             }
             Spacer(minLength: 6)
             if store.ports.count > 1 {
-                let what = "all \(store.ports.count) servers"
-                TwoStepIconButton(help: "Kill \(what)", action: { store.killAll() })
-                    .accessibilityLabel("Kill \(what)")
+                // Worded, because an × beside a heading looks like it closes the section.
+                TwoStepConfirmButton(
+                    idleLabel: "Stop all",
+                    confirmLabel: "Confirm",
+                    systemImage: "stop.fill",
+                    action: { store.killAll() }
+                )
+                .opacity(hovering || stopAllFocused ? 1 : 0)
+                .focused($stopAllFocused)
+                .help("Stop all \(store.ports.count) servers. Asks once first.")
+                .accessibilityLabel("Stop all \(store.ports.count) servers")
             }
         }
         .frame(height: 24)

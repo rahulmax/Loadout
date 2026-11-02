@@ -12,10 +12,16 @@ struct HarnessBar: View {
         let available = store.availableHarnesses
         if available.count > 1 {
             HStack(spacing: 3) {
+                Text("Show")
+                    .font(.rowMeta)
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 5)
                 ForEach(available) { harness in
                     chip(harness)
                 }
             }
+            .padding(.horizontal, Theme.gutter)
+            .padding(.bottom, 8)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Tools to show")
         }
@@ -29,12 +35,14 @@ struct HarnessBar: View {
             store.setManaged(harness, !on)
         } label: {
             HStack(spacing: 3) {
+                // Toggles, not tabs: several can be on, and each says so itself.
+                if on {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 8, weight: .bold))
+                }
                 Text(verbatim: harness.shortLabel)
-                    .foregroundStyle(on ? .primary : .secondary)
-                Text(verbatim: "\(counts.total)")
-                    .foregroundStyle(on ? .secondary : .tertiary)
-                    .monospacedDigit()
             }
+            .foregroundStyle(on ? .primary : .secondary)
             .font(.system(size: 11, weight: .medium))
             .lineLimit(1)
             .fixedSize()
@@ -77,15 +85,21 @@ struct ScopeBar: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 16)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(verbatim: store.selectedProject?.name ?? "All projects")
-                            .font(.rowTitle)
-                            .lineLimit(1)
-                        if let path = store.selectedProject?.displayPath {
-                            Text(verbatim: path)
-                                .font(.rowMeta)
-                                .foregroundStyle(.secondary)
+                        Text("Changes apply to")
+                            .font(.rowMeta)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 6) {
+                            Text(verbatim: store.selectedProject?.name ?? "All projects")
+                                .font(.rowTitle)
                                 .lineLimit(1)
-                                .truncationMode(.middle)
+                                .layoutPriority(1)
+                            if let path = store.selectedProject?.displayPath {
+                                Text(verbatim: path)
+                                    .font(.rowMeta)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
                         }
                     }
                     Spacer(minLength: 8)
@@ -94,7 +108,7 @@ struct ScopeBar: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, Theme.rowPadding)
-                .frame(minHeight: 36)
+                .frame(minHeight: 40)
                 .background(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous).fill(Theme.track))
                 .contentShape(Rectangle())
             }
@@ -102,35 +116,36 @@ struct ScopeBar: View {
             .accessibilityLabel("Project: \(store.selectedProject?.name ?? "All projects")")
             .accessibilityHint("Choose which project the switches change")
 
-            HStack(spacing: 6) {
-                Text(verbatim: explanation)
-                    .font(.rowSubtitle)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 4)
-                if store.selectedProject != nil && store.setHereCount > 0 {
-                    TwoStepConfirmButton(
-                        idleLabel: "Reset all",
-                        confirmLabel: "Confirm reset",
-                        systemImage: "arrow.uturn.backward",
-                        action: { store.resetProject() }
-                    )
+            if let explanation {
+                HStack(spacing: 6) {
+                    Text(verbatim: explanation)
+                        .font(.rowSubtitle)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    if store.setHereCount > 0 {
+                        TwoStepConfirmButton(
+                            idleLabel: "Reset \(store.setHereCount) to default",
+                            confirmLabel: "Confirm reset",
+                            systemImage: "arrow.uturn.backward",
+                            action: { store.resetProject() }
+                        )
+                    }
                 }
+                .frame(minHeight: 24)
+                .padding(.horizontal, Theme.rowPadding)
             }
-            .frame(minHeight: 24)
-            .padding(.horizontal, Theme.rowPadding)
         }
         .padding(.horizontal, Theme.rowInset)
         .padding(.bottom, 8)
     }
 
-    private var explanation: String {
-        guard store.selectedProject != nil else {
-            return "The default for every project. A project can differ."
-        }
+    /// Nil for All projects, where the picker's own label says everything.
+    private var explanation: String? {
+        guard store.selectedProject != nil else { return nil }
         let count = store.setHereCount
-        if count == 0 { return "Only this folder. Everything follows the default." }
-        return "Only this folder. \(count) set here, the rest follow the default."
+        if count == 0 { return "Everything follows the default." }
+        return "\(count) overridden here, the rest follow the default."
     }
 }
 
@@ -372,7 +387,7 @@ struct ProjectMarker: View {
 
     /// One project is named outright. More than that, the tooltip lists them.
     static func summary(_ projects: [String]) -> String {
-        projects.count == 1 ? "Set in \(projects[0])" : "Set in \(projects.count) projects"
+        projects.count == 1 ? "Overridden in \(projects[0])" : "Overridden in \(projects.count) projects"
     }
 
     var body: some View {
@@ -566,11 +581,6 @@ struct ServiceRow: View {
                     expanded.toggle()
                 } label: {
                     HStack(spacing: 8) {
-                        Tile(
-                            glyph: .monogram(Tile.monogram(for: service.name)),
-                            tint: Tile.tint(for: service.id),
-                            dimmed: !service.isOn
-                        )
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 Text(verbatim: service.name)
@@ -584,7 +594,8 @@ struct ServiceRow: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .help(subtitle)
-                            if let statusLine {
+                            // Expanded, each tool's own row below says this.
+                            if let statusLine, !expanded {
                                 Text(verbatim: statusLine)
                                     .font(.rowMeta)
                                     .foregroundStyle(.secondary)
@@ -622,7 +633,7 @@ struct ServiceRow: View {
                         PluginSkillList(service: service)
                     }
                 }
-                .padding(.leading, Theme.gutter + 34)
+                .padding(.leading, Theme.gutter + 12)
                 .padding(.trailing, Theme.gutter)
                 .padding(.bottom, 8)
                 .transition(.opacity)
@@ -839,7 +850,7 @@ struct SkillLegend: View {
     private let items: [(String, String)] = [
         ("Auto", "the agent can pick it"),
         ("Manual", "only when you type /name"),
-        ("Off", "hidden everywhere"),
+        ("Off", "not available"),
     ]
 
     var body: some View {
