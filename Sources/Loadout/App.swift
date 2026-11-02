@@ -463,8 +463,15 @@ struct MenuView: View {
             height: fixedHeight ?? min(1100, (NSScreen.main?.visibleFrame.height ?? 1000) - 80)
         )
         .onAppear { portsStore.refresh() }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
             store.panelOpened()
+            // With keyboard navigation on, macOS focuses the first control on open and
+            // draws its ring around it. Start with nothing focused: Tab still works, and
+            // the ring shows once it's used. A field being typed in keeps its focus.
+            guard let window = notification.object as? NSWindow, !(window is NSSavePanel) else { return }
+            DispatchQueue.main.async {
+                if !(window.firstResponder is NSText) { window.makeFirstResponder(nil) }
+            }
         }
     }
 
@@ -531,9 +538,6 @@ struct MenuView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        // The panel opens with this as first responder, which drew a blue box around it
-        // for no reason. Keyboard users still get the ring.
-        .focusEffectDisabled(!NSApp.isFullKeyboardAccessEnabled)
         .help("Presets and restore")
         .accessibilityLabel("Options")
     }
