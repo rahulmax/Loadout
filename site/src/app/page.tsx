@@ -36,15 +36,15 @@ const FEATURES: {
   shown?: Harness[]
 }[] = [
   {
-    tab: 'ports',
+    tab: 'tools',
     kanji: '港',
     name: 'Ports',
     title: 'See what’s running. Stop what isn’t needed.',
-    body: 'Every dev server listening on your Mac, grouped by project with the folder, framework, PID and uptime. A live probe marks each one as responding or not.',
+    body: 'Every dev server listening on your Mac sits at the top of the panel, three to a row, with its port and project. A live probe marks each one as responding or not. It shows every server, whichever project you’ve picked below.',
     points: [
-      'A Tools shortcut on each project opens its switches',
-      'Kill N stops a whole project’s servers. Kill all asks twice',
-      'Pick a project to show only its servers, with Show all to widen it',
+      'Hover a server to restart or kill it. The tooltip has the folder, framework, PID and uptime',
+      'Stop all appears when you hover over Ports, and asks once first',
+      'Right-click a server for its project’s tools, or to stop the whole project',
     ],
   },
   {
@@ -64,7 +64,7 @@ const FEATURES: {
     kanji: '技',
     name: 'Skills',
     title: 'Auto, Manual or Off.',
-    body: 'Auto lets the agent pick a skill. Manual is only when you type /name. Off hides it everywhere. Each skill shows what it costs per session. Name only, where the agent sees just the name, is in the right-click menu. Plugin skills are summarised, with Change in Tools.',
+    body: 'Auto lets the agent pick a skill. Manual is only when you type /name. Off makes it unavailable. Each skill shows what it costs per session. Name only, where the agent sees just the name, is in the right-click menu. Plugin skills are summarised, with Change in Tools.',
     points: [
       'Set for all projects, or for one project',
       'Writes skillOverrides to your user settings or the project’s',
@@ -76,7 +76,7 @@ const FEATURES: {
     kanji: '絞',
     name: 'Focus',
     title: 'Only the tools you use.',
-    body: 'A row at the top of the panel turns Claude, Codex, Antigravity and Cursor on or off in Loadout, and Tools and the project list follow. It changes what Loadout shows and edits, not the tools: a hidden tool keeps running as it is.',
+    body: 'The Show row turns Claude, Codex, Antigravity and Cursor on or off in Loadout, and Tools and the project list follow. It changes what Loadout shows and edits, not the tools: a hidden tool keeps running as it is.',
     points: [
       'The main switch on a row leaves hidden tools alone',
       'The project list shows folders with a config file for a tool you’re showing',
@@ -300,10 +300,11 @@ export default function Home() {
           <div className="shell frame">
             <BandLabel numeral="01" label="What it does" />
             <div className="frame-main">
-              <BandHead title="Three tabs. Every switch has a scope.">
-                Click the menu bar icon and the panel opens on Ports. Choose
-                which tools to show, pick All projects or one project, and the
-                switches below change that scope. Each change saves straight away, says what
+              <BandHead title="Your servers, two tabs, and a scope for every switch.">
+                Click the menu bar icon and your running servers are at the
+                top. Below them, choose which tools to show and where changes
+                apply: All projects or one project. The switches in Tools and
+                Skills change that scope. Each change saves straight away, says what
                 it saved, and copies the reload command for you.
               </BandHead>
 
@@ -558,7 +559,7 @@ export default function Home() {
           </div>
           <div className="frame-main">
             <p className="footer-credits">
-              Pictograms from IBM Carbon (Apache-2.0). Port detection after{' '}
+              Port detection after{' '}
               <a href="https://github.com/LarsenCundric/port-whisperer">
                 port-whisperer
               </a>

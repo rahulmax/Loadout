@@ -5,7 +5,7 @@
  * Token figures are round demo numbers.
  */
 
-export type TabId = 'ports' | 'tools' | 'skills'
+export type TabId = 'tools' | 'skills'
 
 /** Auto, Manual and Off. Name only exists too, from a skill's right-click menu. */
 export type SkillState = 'auto' | 'manual' | 'off'
@@ -245,7 +245,7 @@ export const SKILL_STATES: { id: SkillState; label: string; tip: string }[] = [
 export const SKILL_LEGEND: [string, string][] = [
   ['Auto', 'the agent can pick it'],
   ['Manual', 'only when you type /name'],
-  ['Off', 'hidden everywhere'],
+  ['Off', 'not available'],
 ]
 
 export const AUTHOR_LOCK_TIP =

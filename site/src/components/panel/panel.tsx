@@ -4,17 +4,15 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
-  ClipboardList,
   Folder,
   FolderPlus,
   Layers,
   Lock,
   Power,
-  Radio,
   RotateCw,
   Search,
-  SlidersHorizontal,
   Sparkles,
+  Square,
   Undo2,
   Wrench,
   X,
@@ -45,7 +43,6 @@ import {
 import type { Harness } from './panel-data'
 
 const TABS: { id: TabId; label: string; icon: LucideIcon }[] = [
-  { id: 'ports', label: 'Ports', icon: Radio },
   { id: 'tools', label: 'Tools', icon: Wrench },
   { id: 'skills', label: 'Skills', icon: Sparkles },
 ]
@@ -84,12 +81,12 @@ function mainState(service: Service, values: boolean[]): MainState {
 
 /**
  * The Loadout menu bar panel, rebuilt in HTML from the SwiftUI views. It is a
- * working model: pick a project, flip switches, move skill states, kill a
+ * working model: pick a project, flip switches, move skill states, stop a
  * server, undo. The footer says what was saved. Nothing persists.
  */
 export function Panel({
   initialShown,
-  initialTab = 'ports',
+  initialTab = 'tools',
   label = 'Loadout panel, recreated',
   className = '',
 }: {
@@ -109,7 +106,6 @@ export function Panel({
   const [undo, setUndo] = useState<{ data: Data; note: Note }[]>([])
   const [note, setNote] = useState<Note | null>(null)
   const [ports, setPorts] = useState<Port[]>(PORTS)
-  const [showAll, setShowAll] = useState(false)
   const [expanded, setExpanded] = useState<string[]>([])
 
   const project = PROJECTS.find((p) => p.id === scope) ?? null
@@ -123,7 +119,6 @@ export function Panel({
 
   const pickScope = (next: Scope) => {
     setScope(next)
-    setShowAll(false)
     setPicking(false)
   }
 
@@ -268,8 +263,10 @@ export function Panel({
     })
   }
 
+  const restart = (p: Port) =>
+    setNote({ text: `Restarted localhost:${p.port}`, reload: false })
+
   const counts: Record<TabId, number> = {
-    ports: ports.length,
     tools: SERVICES.filter((s) => s.controls.some((c) => shown.includes(c.harness)))
       .length,
     skills:
@@ -295,7 +292,10 @@ export function Panel({
         </span>
       </div>
 
+      <PortsSection ports={ports} onKill={kill} onRestart={restart} />
+
       <div className="mac-harnesses" role="group" aria-label="Tools to show">
+        <span className="mac-show">Show</span>
         {HARNESSES.map(({ id, label: name }) => {
           const on = shown.includes(id)
           return (
@@ -326,7 +326,7 @@ export function Panel({
           type="button"
           className="mac-picker"
           aria-expanded={picking}
-          aria-label={`Project: ${project?.name ?? 'All projects'}`}
+          aria-label={`Changes apply to ${project?.name ?? 'All projects'}`}
           onClick={() => setPicking(!picking)}
         >
           {project ? (
@@ -335,8 +335,11 @@ export function Panel({
             <Layers size={13} strokeWidth={1.8} aria-hidden />
           )}
           <span className="mac-row-text">
-            <span className="mac-name">{project?.name ?? 'All projects'}</span>
-            {project && <span className="mac-sub">{project.path}</span>}
+            <span className="mac-sub">Changes apply to</span>
+            <span className="mac-picker-line">
+              <span className="mac-name">{project?.name ?? 'All projects'}</span>
+              {project && <span className="mac-sub">{project.path}</span>}
+            </span>
           </span>
           <ChevronsUpDown size={12} strokeWidth={2} aria-hidden />
         </button>
@@ -348,23 +351,24 @@ export function Panel({
             onClose={() => setPicking(false)}
           />
         ) : (
-          <div className="mac-scope-line">
-            <span>
-              {!project
-                ? 'The default for every project. A project can differ.'
-                : setHereCount === 0
-                  ? 'Only this folder. Everything follows the default.'
-                  : `Only this folder. ${setHereCount} set here, the rest follow the default.`}
-            </span>
-            {project && setHereCount > 0 && (
-              <TwoStep
-                idle="Reset all"
-                confirm="Confirm reset"
-                icon={Undo2}
-                onConfirm={resetAll}
-              />
-            )}
-          </div>
+          // All projects needs no line: the picker's own label says it.
+          project && (
+            <div className="mac-scope-line">
+              <span>
+                {setHereCount === 0
+                  ? 'Everything follows the default.'
+                  : `${setHereCount} overridden here, the rest follow the default.`}
+              </span>
+              {setHereCount > 0 && (
+                <TwoStep
+                  idle={`Reset ${setHereCount} to default`}
+                  confirm="Confirm reset"
+                  icon={Undo2}
+                  onConfirm={resetAll}
+                />
+              )}
+            </div>
+          )
         )}
       </div>
 
@@ -386,19 +390,6 @@ export function Panel({
       </div>
 
       <div className="mac-body" role="tabpanel">
-        {tab === 'ports' && (
-          <PortsView
-            ports={ports}
-            project={project?.name ?? null}
-            showAll={showAll}
-            onShowAll={() => setShowAll(!showAll)}
-            onKill={kill}
-            onTools={(id) => {
-              pickScope(id)
-              setTab('tools')
-            }}
-          />
-        )}
         {tab === 'tools' && (
           <ToolsView
             shown={shown}
@@ -434,13 +425,10 @@ export function Panel({
       </div>
 
       <div className="mac-foot" aria-live="polite">
-        {note?.reload ? (
-          <CheckCircle2 size={12} className="mac-foot-ok" aria-hidden />
-        ) : (
-          <ClipboardList size={12} aria-hidden />
-        )}
+        {/* Empty until there's a change to report. */}
+        {note && <CheckCircle2 size={12} className="mac-foot-ok" aria-hidden />}
         <span className="mac-foot-text">
-          {note ? (
+          {note && (
             <>
               <span className="mac-foot-note">{note.text}</span>
               {note.reload && (
@@ -449,10 +437,6 @@ export function Panel({
                 </span>
               )}
             </>
-          ) : (
-            <span>
-              Open Claude sessions need <code>/reload-plugins</code>
-            </span>
           )}
         </span>
         {undo.length > 0 && (
@@ -557,114 +541,113 @@ function ProjectMenu({
   )
 }
 
-function PortsView({
+/**
+ * Always at the top, whichever project is chosen: it says what's running on the
+ * machine. Up to three servers to a row; actions appear on hover.
+ */
+function PortsSection({
   ports,
-  project,
-  showAll,
-  onShowAll,
   onKill,
-  onTools,
+  onRestart,
 }: {
   ports: Port[]
-  project: string | null
-  showAll: boolean
-  onShowAll: () => void
   onKill: (list: Port[]) => void
-  onTools: (project: string) => void
+  onRestart: (port: Port) => void
 }) {
-  const filtered = project && !showAll
-  const shown = filtered ? ports.filter((p) => p.project === project) : ports
-  const hidden = ports.length - shown.length
-  const groups = PROJECTS.map((p) => ({
-    project: p,
-    ports: shown.filter((s) => s.project === p.id),
-  })).filter((g) => g.ports.length > 0)
-
+  const ordered = PROJECTS.flatMap((p) => ports.filter((s) => s.project === p.id))
   return (
-    <>
-      <Toolbar summary={`${shown.length} listening`}>
-        {shown.length > 0 && (
-          <TwoStep
-            idle="Kill all"
-            confirm="Confirm kill all"
-            icon={X}
-            onConfirm={() => onKill(shown)}
-          />
+    <section className="mac-ports" aria-label="Ports">
+      <div className="mac-ports-head">
+        <span className="mac-section-label">Ports</span>
+        {ports.length > 0 ? (
+          <span className="mac-section-label">{ports.length}</span>
+        ) : (
+          <span className="mac-ports-status">No dev servers running</span>
         )}
-      </Toolbar>
-      {project && (
-        <div className="mac-note-row">
-          <span>
-            {showAll
-              ? 'Showing every project'
-              : `Only ${project}${hidden > 0 ? `. ${hidden} more elsewhere.` : ''}`}
+        {ports.length > 1 && (
+          <span className="mac-ports-stop">
+            <TwoStep
+              idle="Stop all"
+              confirm="Confirm"
+              icon={Square}
+              onConfirm={() => onKill(ports)}
+            />
           </span>
-          <button type="button" className="mac-pill" onClick={onShowAll}>
-            {showAll ? `Only ${project}` : 'Show all'}
-          </button>
-        </div>
-      )}
-      {groups.length === 0 && <p className="mac-empty">No servers listening</p>}
-      {groups.map(({ project: p, ports: list }) => (
-        <section key={p.id} className="mac-group">
-          <div className="mac-group-head">
-            <Folder size={12} strokeWidth={1.8} aria-hidden />
-            <span className="mac-group-name">{p.name}</span>
-            <span className="mac-group-meta">{list.length}</span>
-            <span className="mac-group-meta mac-group-path">{p.path}</span>
-            <button
-              type="button"
-              className="mac-icon"
-              title="Tools for this project"
-              aria-label={`Tools for ${p.name}`}
-              onClick={() => onTools(p.id)}
-            >
-              <SlidersHorizontal size={13} strokeWidth={1.8} aria-hidden />
-            </button>
-            {list.length > 1 && (
-              <TwoStep
-                idle={`Kill ${list.length}`}
-                confirm={`Confirm kill ${list.length}`}
-                icon={X}
-                onConfirm={() => onKill(list)}
-              />
-            )}
-          </div>
-          <ul className="mac-list mac-ports">
-            {list.map((s) => (
-              <li key={s.port} className="mac-port">
+        )}
+      </div>
+      {ordered.length > 0 && (
+        <ul className="mac-port-grid">
+          {ordered.map((s) => {
+            const p = PROJECTS.find((x) => x.id === s.project)
+            return (
+              <li
+                key={s.port}
+                className="mac-cell"
+                title={`localhost:${s.port}\n${p?.path ?? ''}\n${s.framework}\n${s.process} · PID ${s.pid} · up ${s.uptime}`}
+              >
                 <span
                   className="mac-dot"
                   data-state={s.healthy ? 'ok' : 'down'}
-                  title={s.healthy ? 'Responding' : 'Not responding'}
+                  aria-label={s.healthy ? 'Responding' : 'Not responding'}
                 />
-                <span className="mac-row-text">
-                  <span className="mac-port-line">
-                    <span className="mac-mono mac-port-host">
-                      localhost:<b>{s.port}</b>
-                    </span>
-                    <span className="mac-chip">{s.framework}</span>
-                  </span>
-                  <span className="mac-port-meta">
-                    PID {s.pid} · {s.process} · up {s.uptime}
-                  </span>
-                </span>
-                <span className="mac-port-actions">
-                  <RotateCw size={13} strokeWidth={1.8} aria-hidden />
+                <span className="mac-mono mac-cell-port">:{s.port}</span>
+                <span className="mac-cell-cap">{p?.name}</span>
+                <span className="mac-cell-actions">
                   <button
                     type="button"
-                    className="mac-pill"
-                    onClick={() => onKill([s])}
+                    className="mac-cell-btn"
+                    aria-label={`Restart localhost:${s.port}`}
+                    title="Restart: kill and relaunch the same command in the same folder"
+                    onClick={() => onRestart(s)}
                   >
-                    Kill
+                    <RotateCw size={11} strokeWidth={2} aria-hidden />
                   </button>
+                  <TwoStepIcon
+                    label={`Kill localhost:${s.port}`}
+                    onConfirm={() => onKill([s])}
+                  />
                 </span>
               </li>
-            ))}
-          </ul>
-        </section>
-      ))}
-    </>
+            )
+          })}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+/** An × that asks once before it acts, like the app's. */
+function TwoStepIcon({
+  label,
+  onConfirm,
+}: {
+  label: string
+  onConfirm: () => void
+}) {
+  const [armed, setArmed] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
+
+  return (
+    <button
+      type="button"
+      className="mac-cell-btn"
+      data-armed={armed || undefined}
+      aria-label={armed ? `${label}: click again to confirm` : label}
+      title={armed ? 'Click again to confirm' : 'Kill: SIGTERM, then SIGKILL if it doesn’t stop'}
+      onClick={() => {
+        clearTimeout(timer.current)
+        if (armed) {
+          setArmed(false)
+          onConfirm()
+        } else {
+          setArmed(true)
+          timer.current = setTimeout(() => setArmed(false), 3000)
+        }
+      }}
+    >
+      {armed ? <b aria-hidden>!</b> : <X size={11} strokeWidth={2.4} aria-hidden />}
+    </button>
   )
 }
 
@@ -739,9 +722,6 @@ function ToolsView({
           return (
             <li key={s.id} className="mac-service">
               <div className="mac-row">
-                <span className="mac-letter" aria-hidden>
-                  {s.name[0]}
-                </span>
                 <button
                   type="button"
                   className="mac-disclose"
@@ -763,14 +743,14 @@ function ToolsView({
                       {setHere(s) && <span className="mac-tag">This project</span>}
                     </span>
                     <span className="mac-sub">{subtitle}</span>
-                    {s.notConnected && (
+                    {s.notConnected && !open && (
                       <span className="mac-sub">Not connected</span>
                     )}
                   </span>
                 </button>
                 {elsewhere.length > 0 && (
                   <Marker
-                    label={elsewhere.length === 1 ? `Set in ${elsewhere[0]}` : `Set in ${elsewhere.length} projects`}
+                    label={elsewhere.length === 1 ? `Overridden in ${elsewhere[0]}` : `Overridden in ${elsewhere.length} projects`}
                     tip={elsewhere.join(', ')}
                   />
                 )}
@@ -925,8 +905,8 @@ function SkillsView({
                       {' · '}
                       <span title={elsewhere.join(', ')}>
                         {elsewhere.length === 1
-                          ? `Set in ${elsewhere[0]}`
-                          : `Set in ${elsewhere.length} projects`}
+                          ? `Overridden in ${elsewhere[0]}`
+                          : `Overridden in ${elsewhere.length} projects`}
                       </span>
                     </>
                   )}
@@ -1086,7 +1066,7 @@ function Switch({
   )
 }
 
-/** Quiet note that some projects differ, with the detail in a tooltip. */
+/** Quiet note that some projects override this, with the detail in a tooltip. */
 function Marker({ label, tip }: { label: string; tip: string }) {
   return (
     <span className="mac-marker" title={tip}>

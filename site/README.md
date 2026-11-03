@@ -15,5 +15,5 @@ pnpm lint
 
 - `src/app/page.tsx`: the page and all its copy
 - `src/components/panel/`: the menu bar panel rebuilt in HTML. The demo data is invented, so no real machine shows. Sizes were measured off the app's `LOADOUT_SNAPSHOT` renders.
-- `src/components/pictograms.ts`: IBM Carbon pictograms (Apache-2.0), inlined
+- `src/components/pictograms.ts`: the backpack mark, inlined
 - `public/motifs/`: the mist and washi fibre, cut from a generated sumi-e sheet as alpha masks. They take the ink colour of the current theme.
